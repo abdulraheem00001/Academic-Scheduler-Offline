@@ -14,7 +14,7 @@ workflows:
           npx expo export:embed \
             --platform ios \
             --dev false \
-            --entry-file node_modules/expo/AppEntry.js \
+            --entry-file index.js \
             --bundle-output ios/main.jsbundle \
             --assets-dest ios
       - name: Build iOS App
