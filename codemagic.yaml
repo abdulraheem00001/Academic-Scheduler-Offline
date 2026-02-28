@@ -1,0 +1,20 @@
+workflows:
+  ios-build:
+    name: iOS Build (Unsigned)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    scripts:
+      - name: Install dependencies
+        script: npm install
+      - name: Expo Prebuild
+        script: npx expo prebuild --platform ios
+      - name: Build iOS App
+        script: |
+          xcodebuild archive \
+            -workspace ios/*.xcworkspace \
+            -scheme $(ls ios/*.xcodeproj | xargs basename -s .xcodeproj) \
+            -configuration Debug \
+            -archivePath build/ios/export.xcarchive \
+            CODE_SIGNING_ALLOWED=NO
+    artifacts:
+      - build/ios/*.xcarchive
