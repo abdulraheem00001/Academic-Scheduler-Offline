@@ -8,22 +8,18 @@ workflows:
         script: npm install
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios
-      - name: Bundle and Inject JS
+      - name: Bundle and Force Link
         script: |
-          # 1. Create the bundle manually
+          # 1. Create the bundle for Expo Router
           npx expo export:embed \
             --platform ios \
             --dev false \
             --entry-file node_modules/expo-router/entry.js \
             --bundle-output ios/main.jsbundle \
             --assets-dest ios
-          
-          # 2. Inject it into the native project folder
-          # Replace 'UniSchedule' with your actual project folder name if different
-          mkdir -p ios/UniSchedule
-          cp ios/main.jsbundle ios/UniSchedule/main.jsbundle
-      - name: Build iOS App
+      - name: Build and Inject
         script: |
+          # 1. Build the Archive
           xcodebuild archive \
             -workspace ios/*.xcworkspace \
             -scheme UniSchedule \
@@ -33,5 +29,11 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_ENTITLEMENTS="" \
             CODE_SIGNING_METHOD=manual
+          
+          # 2. PHYSICAL INJECTION: 
+          # This forces the bundle into the .app folder inside the archive
+          APP_PATH=$(find build/ios/export.xcarchive -name "*.app")
+          cp ios/main.jsbundle "$APP_PATH/main.jsbundle"
+          echo "Bundle injected into: $APP_PATH"
     artifacts:
       - build/ios/export.xcarchive
