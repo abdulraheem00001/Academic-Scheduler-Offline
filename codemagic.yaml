@@ -12,9 +12,12 @@ workflows:
         script: |
           xcodebuild archive \
             -workspace ios/*.xcworkspace \
-            -scheme $(ls ios/*.xcodeproj | xargs basename -s .xcodeproj) \
+            -scheme UniSchedule \
             -configuration Debug \
             -archivePath build/ios/export.xcarchive \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_METHOD=manual
     artifacts:
-      - build/ios/*.xcarchive
+      - build/ios/export.xcarchive
