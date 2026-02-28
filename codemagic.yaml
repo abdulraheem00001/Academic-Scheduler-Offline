@@ -8,13 +8,13 @@ workflows:
         script: npm install
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios
-      - name: Bundle JavaScript
+      - name: Bundle JavaScript (Expo Router)
         script: |
           mkdir -p ios/main.jsbundle
           npx expo export:embed \
             --platform ios \
             --dev false \
-            --entry-file index.js \
+            --entry-file node_modules/expo-router/entry.js \
             --bundle-output ios/main.jsbundle \
             --assets-dest ios
       - name: Build iOS App
