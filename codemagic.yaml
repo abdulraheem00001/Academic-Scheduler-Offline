@@ -1,6 +1,6 @@
 workflows:
   ios-build:
-    name: iOS Build (Unsigned)
+    name: iOS Build (Unsigned Release)
     max_build_duration: 60
     instance_type: mac_mini_m2
     scripts:
@@ -8,32 +8,30 @@ workflows:
         script: npm install
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios
-      - name: Bundle and Force Link
+      - name: Bundle and Force Inject
         script: |
-          # 1. Create the bundle for Expo Router
+          # 1. Generate the JavaScript bundle for Release
           npx expo export:embed \
             --platform ios \
             --dev false \
             --entry-file node_modules/expo-router/entry.js \
             --bundle-output ios/main.jsbundle \
             --assets-dest ios
-      - name: Build and Inject
-        script: |
-          # 1. Build the Archive
+          
+          # 2. Build the app shell in RELEASE mode (This removes the 'Connect to Metro' screen)
           xcodebuild archive \
             -workspace ios/*.xcworkspace \
             -scheme UniSchedule \
-            -configuration Debug \
+            -configuration Release \
             -archivePath build/ios/export.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_ENTITLEMENTS="" \
             CODE_SIGNING_METHOD=manual
           
-          # 2. PHYSICAL INJECTION: 
-          # This forces the bundle into the .app folder inside the archive
-          APP_PATH=$(find build/ios/export.xcarchive -name "*.app")
-          cp ios/main.jsbundle "$APP_PATH/main.jsbundle"
-          echo "Bundle injected into: $APP_PATH"
+          # 3. Inject the bundle into the Release package
+          APP_DIR=$(find build/ios/export.xcarchive -name "*.app")
+          cp ios/main.jsbundle "$APP_DIR/main.jsbundle"
+          echo "✅ SUCCESS: Release bundle injected into: $APP_DIR"
     artifacts:
       - build/ios/export.xcarchive
