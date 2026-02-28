@@ -8,9 +8,9 @@ workflows:
         script: npm install
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios
-      - name: Bundle and Link JavaScript
+      - name: Bundle and Inject JS
         script: |
-          # 1. Create the bundle for Expo Router
+          # 1. Create the bundle manually
           npx expo export:embed \
             --platform ios \
             --dev false \
@@ -18,8 +18,9 @@ workflows:
             --bundle-output ios/main.jsbundle \
             --assets-dest ios
           
-          # 2. Force the bundle into the correct native location
-          mkdir -p ios/UniSchedule/
+          # 2. Inject it into the native project folder
+          # Replace 'UniSchedule' with your actual project folder name if different
+          mkdir -p ios/UniSchedule
           cp ios/main.jsbundle ios/UniSchedule/main.jsbundle
       - name: Build iOS App
         script: |
