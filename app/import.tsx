@@ -15,35 +15,282 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
+import { unzlibSync } from 'fflate';
 import { useSchedule } from '@/context/ScheduleContext';
 import { InsertLecture } from '@/lib/database';
 import Colors from '@/constants/colors';
 
 type ImportMode = 'choose' | 'json' | 'pdf-info' | 'processing';
 
-function parseTimetablePdf(text: string, semester: string, section: string): InsertLecture[] {
-  const lectures: InsertLecture[] = [];
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-
-  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const slotRegex = /S-\d+\s*\((\d+:\d+)\s*[-–]\s*(\d+:\d+)\)/gi;
-
-  let currentDay = '';
-  const slots: { start: string; end: string }[] = [];
-
-  for (const line of lines) {
-    const dayFound = days.find(d => line.includes(d));
-    if (dayFound) {
-      currentDay = dayFound;
-      slots.length = 0;
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const SECTION_ORDER = [
+  { semester: 1, section: 'M1' },
+  { semester: 1, section: 'M2' },
+  { semester: 2, section: 'M1' },
+  { semester: 2, section: 'M2' },
+  { semester: 3, section: 'M1' },
+  { semester: 3, section: 'M2' },
+  { semester: 4, section: 'A' },
+  { semester: 4, section: 'B' },
+  { semester: 5, section: 'A' },
+  { semester: 5, section: 'B' },
+];
+function parseSemesterNumber(value: string): number | null {
+  const match = value.match(/([1-8])/);
+  if (!match) return null;
+  const n = parseInt(match[1], 10);
+  return n >= 1 && n <= 8 ? n : null;
+}
+function normalizeTextToken(value: string): string {
+  return value.replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function normalizeTime(value: string, fallbackMeridiem: 'AM' | 'PM' = 'AM'): string {
+  const m = value.trim().match(/^(\d{1,2}):(\d{2})(?:\s*([AP]M))?$/i);
+  if (!m) return value.trim();
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const mer = (m[3]?.toUpperCase() as 'AM' | 'PM' | undefined) ?? fallbackMeridiem;
+  if (mer === 'AM') {
+    if (h === 12) h = 0;
+  } else if (h < 12) {
+    h += 12;
+  }
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+function parseSlotRange(token: string): { start: string; end: string } | null {
+  const slotMatch = token.match(/S-\d+\s*\(([^)]+)\)/i);
+  if (!slotMatch) return null;
+  const raw = slotMatch[1].replace(/\s+/g, '');
+  const rangeMatch = raw.match(/(\d{1,2}:\d{2}(?:[AP]M)?)\s*[-–]\s*(\d{1,2}:\d{2}(?:[AP]M)?)/i);
+  if (!rangeMatch) return null;
+  const startRaw = rangeMatch[1];
+  const endRaw = rangeMatch[2];
+  const endMeridiem = /PM$/i.test(endRaw) ? 'PM' : /AM$/i.test(endRaw) ? 'AM' : undefined;
+  const fallbackMeridiem: 'AM' | 'PM' = endMeridiem ?? (parseInt(startRaw.split(':')[0], 10) >= 8 ? 'AM' : 'PM');
+  return {
+    start: normalizeTime(startRaw, fallbackMeridiem),
+    end: normalizeTime(endRaw, fallbackMeridiem),
+  };
+}
+function decodePdfLiteralString(raw: string): string {
+  let out = '';
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
     }
+    const next = raw[i + 1];
+    if (!next) break;
+    if (/[0-7]/.test(next)) {
+      let oct = next;
+      if (/[0-7]/.test(raw[i + 2] ?? '')) oct += raw[i + 2];
+      if (/[0-7]/.test(raw[i + 3] ?? '')) oct += raw[i + 3];
+      out += String.fromCharCode(parseInt(oct, 8));
+      i += oct.length;
+      continue;
+    }
+    const escapes: Record<string, string> = {
+      n: '\n',
+      r: '\r',
+      t: '\t',
+      b: '\b',
+      f: '\f',
+      '\\': '\\',
+      '(': '(',
+      ')': ')',
+    };
+    out += escapes[next] ?? next;
+    i += 1;
+  }
+  return out;
+}
+function decodePdfHexString(hex: string): string {
+  const clean = hex.replace(/[^0-9a-fA-F]/g, '');
+  if (clean.length < 2) return '';
+  const padded = clean.length % 2 === 0 ? clean : `${clean}0`;
+  const bytes = new Uint8Array(padded.length / 2);
+  for (let i = 0; i < padded.length; i += 2) {
+    bytes[i / 2] = parseInt(padded.slice(i, i + 2), 16);
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let s = '';
+    for (let i = 2; i + 1 < bytes.length; i += 2) {
+      s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
+    }
+    return s;
+  }
+  return String.fromCharCode(...bytes);
+}
+function bytesToBinary(bytes: Uint8Array): string {
+  let out = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    out += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return out;
+}
+function binaryToBytes(binary: string): Uint8Array {
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i) & 0xff;
+  return out;
+}
+function base64ToBytes(base64: string): Uint8Array {
+  if (typeof globalThis.atob !== 'function') {
+    throw new Error('Base64 decoding is not available on this device.');
+  }
+  return binaryToBytes(globalThis.atob(base64));
+}
+function extractPdfTokens(pdfBytes: Uint8Array): string[] {
+  const binary = bytesToBinary(pdfBytes);
+  const streamRegex = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  const tokens: string[] = [];
+  let streamMatch: RegExpExecArray | null;
+  while ((streamMatch = streamRegex.exec(binary)) !== null) {
+    const streamBytes = binaryToBytes(streamMatch[1]);
+    const objectHeader = binary.slice(Math.max(0, streamMatch.index - 500), streamMatch.index);
+    let decodedBytes = streamBytes;
+    if (/\/FlateDecode/.test(objectHeader)) {
+      try {
+        decodedBytes = unzlibSync(streamBytes);
+      } catch {
+        continue;
+      }
+    }
+    const decoded = bytesToBinary(decodedBytes);
+    const textBlocks = decoded.match(/BT[\s\S]*?ET/g) ?? [];
+    for (const block of textBlocks) {
+      for (const arrayMatch of block.matchAll(/\[(.*?)\]\s*TJ/gs)) {
+        const parts: string[] = [];
+        for (const literalMatch of arrayMatch[1].matchAll(/\((?:\\.|[^\\()])*\)/g)) {
+          parts.push(decodePdfLiteralString(literalMatch[0].slice(1, -1)));
+        }
+        for (const hexMatch of arrayMatch[1].matchAll(/<([0-9a-fA-F\s]+)>/g)) {
+          parts.push(decodePdfHexString(hexMatch[1]));
+        }
+        const normalized = normalizeTextToken(parts.join(''));
+        if (normalized) tokens.push(normalized);
+      }
+      for (const literalTj of block.matchAll(/\((?:\\.|[^\\()])*\)\s*Tj/g)) {
+        const value = decodePdfLiteralString(literalTj[0].replace(/\)\s*Tj$/, '').slice(1));
+        const normalized = normalizeTextToken(value);
+        if (normalized) tokens.push(normalized);
+      }
+    }
+  }
+  return tokens;
+}
+function parseTimetablePdf(pdfBytes: Uint8Array, semesterInput: string, sectionInput: string): InsertLecture[] {
+  const targetSemester = parseSemesterNumber(semesterInput);
+  if (!targetSemester) throw new Error('Invalid semester. Use 1 to 8 (example: 5th).');
+  const targetSection = sectionInput.trim().toUpperCase();
+  const tokens = extractPdfTokens(pdfBytes);
+  if (tokens.length === 0) return [];
+  const slots = tokens
+    .map(parseSlotRange)
+    .filter((x): x is { start: string; end: string } => Boolean(x))
+    .slice(0, 6);
+  const defaultSlots = [
+    { start: '08:00', end: '09:20' },
+    { start: '09:30', end: '10:50' },
+    { start: '11:00', end: '12:20' },
+    { start: '12:30', end: '13:50' },
+    { start: '14:00', end: '15:20' },
+    { start: '15:30', end: '16:50' },
+  ];
+  const slotTimes = slots.length >= 6 ? slots : defaultSlots;
+  const controlTokens = new Set([
+    'Section',
+    'Slots',
+    'Semester',
+    'Time Table - Spring 2026 - BS Computer Science (Morning)',
+    ...DAYS,
+    ...SECTION_ORDER.map(s => s.section),
+    '1st Semester',
+    '2nd Semester',
+    '3rd Semester',
+    '4th Semester',
+    '5th Semester',
+    '6th Semester',
+    '7th Semester',
+    '8th Semester',
+  ]);
+  const lectures: InsertLecture[] = [];
+  const seen = new Set<string>();
+  const daySegments: Array<{ day: string; tokens: string[] }> = [];
+  let pending: string[] = [];
 
-    let match: RegExpExecArray | null;
-    slotRegex.lastIndex = 0;
-    while ((match = slotRegex.exec(line)) !== null) {
-      slots.push({ start: match[1], end: match[2] });
+  for (const token of tokens) {
+    if (DAYS.includes(token)) {
+      daySegments.push({ day: token, tokens: pending });
+      pending = [];
+      continue;
+    }
+    pending.push(token);
+  }
+
+  for (const segment of daySegments) {
+    let currentSemester = 0;
+    let currentSection = '';
+    let sectionOrderIndex = 0;
+    let slotIndex = 0;
+
+    for (let i = 0; i < segment.tokens.length; i += 1) {
+      const token = segment.tokens[i];
+      const semesterNum = parseSemesterNumber(token);
+
+      if (semesterNum && /Semester$/i.test(token)) {
+        currentSemester = semesterNum;
+        currentSection = '';
+        slotIndex = 0;
+        continue;
+      }
+
+      if (token === 'M1' || token === 'M2' || token === 'A' || token === 'B') {
+        let resolvedIndex = sectionOrderIndex;
+        if (SECTION_ORDER[resolvedIndex]?.section !== token) {
+          const found = SECTION_ORDER.findIndex((entry, idx) => idx >= sectionOrderIndex && entry.section === token);
+          if (found !== -1) resolvedIndex = found;
+        }
+        const resolved = SECTION_ORDER[resolvedIndex];
+        currentSemester = resolved?.semester ?? currentSemester;
+        currentSection = token;
+        slotIndex = 0;
+        sectionOrderIndex = Math.min(resolvedIndex + 1, SECTION_ORDER.length);
+        continue;
+      }
+
+      const room = segment.tokens[i + 1] ?? '';
+      if (!room || slotIndex >= slotTimes.length) continue;
+      if (controlTokens.has(token) || controlTokens.has(room)) continue;
+      if (!/(CR-|CS Lab|DLD Lab|Lab|Room|Floor)/i.test(room)) continue;
+
+      const teacherCandidate = segment.tokens[i + 2] ?? '';
+      const hasTeacher = /^(Mr\.|Ms\.|Dr\.)/i.test(teacherCandidate);
+      const teacher = hasTeacher ? teacherCandidate : 'TBA';
+
+      if (targetSemester === currentSemester && (!targetSection || targetSection === currentSection)) {
+        const slot = slotTimes[slotIndex];
+        const lecture: InsertLecture = {
+          day: segment.day,
+          subject: token,
+          room,
+          teacher,
+          startTime: slot.start,
+          endTime: slot.end,
+          reminderEnabled: 0,
+        };
+        const key = `${lecture.day}|${lecture.startTime}|${lecture.endTime}|${lecture.subject}|${lecture.room}|${lecture.teacher}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          lectures.push(lecture);
+        }
+      }
+
+      slotIndex += 1;
+      i += hasTeacher ? 2 : 1;
     }
   }
 
@@ -136,20 +383,11 @@ export default function ImportScreen() {
     setImporting(true);
     setMode('processing');
     try {
-      const content = await FileSystem.readAsStringAsync(pdfUri, {
-        encoding: FileSystem.EncodingType.UTF8,
-      }).catch(() => null);
-
-      if (!content || content.length < 50) {
-        Alert.alert(
-          'PDF Not Readable',
-          'This PDF cannot be read as text. Please use JSON import instead.\n\nTip: Copy your timetable data into the JSON format and use the JSON import option.',
-          [{ text: 'Use JSON Import', onPress: () => setMode('json') }, { text: 'Cancel', onPress: () => setMode('choose') }]
-        );
-        return;
-      }
-
-      const lectures = parseTimetablePdf(content, semester.trim(), section.trim());
+      const pdfBase64 = await FileSystem.readAsStringAsync(pdfUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const pdfBytes = base64ToBytes(pdfBase64);
+      const lectures = parseTimetablePdf(pdfBytes, semester.trim(), section.trim());
 
       if (lectures.length === 0) {
         Alert.alert(
@@ -501,3 +739,4 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
 });
+

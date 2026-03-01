@@ -83,6 +83,10 @@ export async function toggleReminder(id: number, enabled: boolean): Promise<void
   await saveLectures(all);
 }
 
+export async function deleteAllLectures(): Promise<void> {
+  await saveLectures([]);
+}
+
 export async function getSetting(key: string): Promise<string | null> {
   const val = await AsyncStorage.getItem(`${SETTINGS_KEY}_${key}`);
   return val ?? (key === 'reminderLeadTime' ? '10' : null);

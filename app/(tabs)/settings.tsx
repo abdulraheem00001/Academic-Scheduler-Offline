@@ -11,15 +11,31 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSchedule } from '@/context/ScheduleContext';
 import Colors from '@/constants/colors';
 
 const LEAD_TIMES = [5, 10, 15, 20, 30];
+const ROUTINE_KEY = 'unischedule_daily_routine';
+
+type StoredRoutine = {
+  reminderIds?: string[];
+  reminderId?: string | null;
+};
+
+function getRoutineNotificationIds(item: StoredRoutine): string[] {
+  if (Array.isArray(item.reminderIds) && item.reminderIds.length > 0) return item.reminderIds;
+  if (item.reminderId) return [item.reminderId];
+  return [];
+}
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { reminderLeadTime, setReminderLeadTime } = useSchedule();
+  const { reminderLeadTime, setReminderLeadTime, clearAllLectures } = useSchedule();
   const [saving, setSaving] = useState(false);
+  const [clearingLectures, setClearingLectures] = useState(false);
+  const [clearingRoutine, setClearingRoutine] = useState(false);
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const bottomPad = Platform.OS === 'web' ? 84 + 34 : insets.bottom + 80;
@@ -33,6 +49,56 @@ export default function SettingsScreen() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleDeleteAllLectures = () => {
+    Alert.alert(
+      'Delete All Lectures',
+      'This will remove all lectures from your schedule. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All',
+          style: 'destructive',
+          onPress: async () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            setClearingLectures(true);
+            try {
+              await clearAllLectures();
+            } finally {
+              setClearingLectures(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAllRoutine = () => {
+    Alert.alert(
+      'Delete All Routine',
+      'This will remove all routine items and their reminders. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All',
+          style: 'destructive',
+          onPress: async () => {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            setClearingRoutine(true);
+            try {
+              const raw = await AsyncStorage.getItem(ROUTINE_KEY);
+              const routines: StoredRoutine[] = raw ? JSON.parse(raw) : [];
+              const ids = routines.flatMap(getRoutineNotificationIds);
+              await Promise.all(ids.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+              await AsyncStorage.setItem(ROUTINE_KEY, '[]');
+            } finally {
+              setClearingRoutine(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -91,6 +157,38 @@ export default function SettingsScreen() {
               <Text style={styles.aboutValue}>Local SQLite (offline)</Text>
             </View>
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="trash-outline" size={16} color={Colors.danger} />
+            <Text style={styles.sectionTitle}>Danger Zone</Text>
+          </View>
+          <Text style={styles.sectionDesc}>
+            Permanently remove all lectures or all routine items.
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.dangerBtn, (clearingLectures || clearingRoutine) && styles.dangerBtnDisabled]}
+            onPress={handleDeleteAllLectures}
+            disabled={clearingLectures || clearingRoutine}
+          >
+            <Ionicons name="calendar-clear-outline" size={16} color={Colors.danger} />
+            <Text style={styles.dangerBtnText}>
+              {clearingLectures ? 'Deleting Lectures...' : 'Delete All Lectures'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.dangerBtn, (clearingLectures || clearingRoutine) && styles.dangerBtnDisabled]}
+            onPress={handleDeleteAllRoutine}
+            disabled={clearingLectures || clearingRoutine}
+          >
+            <Ionicons name="list-outline" size={16} color={Colors.danger} />
+            <Text style={styles.dangerBtnText}>
+              {clearingRoutine ? 'Deleting Routine...' : 'Delete All Routine'}
+            </Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     </View>
@@ -201,5 +299,25 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_500Medium',
     fontSize: 14,
     color: Colors.text,
+  },
+  dangerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.dangerDim,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.35)',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 10,
+  },
+  dangerBtnDisabled: {
+    opacity: 0.55,
+  },
+  dangerBtnText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: Colors.danger,
   },
 });

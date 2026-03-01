@@ -45,6 +45,7 @@
     "expo-system-ui": "~6.0.9",
     "expo-web-browser": "~15.0.10",
     "express": "^5.0.1",
+    "fflate": "^0.8.2",
     "http-proxy-middleware": "^3.0.5",
     "pg": "^8.16.3",
     "react": "19.1.0",
@@ -60,6 +61,7 @@
     "react-native-worklets": "0.5.1",
     "tsx": "^4.20.6",
     "ws": "^8.18.0",
+    "xlsx": "^0.18.5",
     "zod": "^3.24.2",
     "zod-validation-error": "^3.4.0"
   },

@@ -10,6 +10,7 @@ import {
   getSetting,
   setSetting,
   insertLectures,
+  deleteAllLectures,
 } from '@/lib/database';
 
 interface ScheduleContextValue {
@@ -22,6 +23,7 @@ interface ScheduleContextValue {
   removeLecture: (id: number) => Promise<void>;
   toggleLectureReminder: (id: number, enabled: boolean) => Promise<void>;
   importLectures: (lectures: InsertLecture[]) => Promise<void>;
+  clearAllLectures: () => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -86,6 +88,11 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     await refresh();
   }, [refresh]);
 
+  const clearAllLectures = useCallback(async () => {
+    await deleteAllLectures();
+    setLectures([]);
+  }, []);
+
   const value = useMemo(() => ({
     lectures,
     loading,
@@ -96,8 +103,9 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     removeLecture,
     toggleLectureReminder,
     importLectures,
+    clearAllLectures,
     refresh,
-  }), [lectures, loading, reminderLeadTime, setReminderLeadTime, addLecture, editLecture, removeLecture, toggleLectureReminder, importLectures, refresh]);
+  }), [lectures, loading, reminderLeadTime, setReminderLeadTime, addLecture, editLecture, removeLecture, toggleLectureReminder, importLectures, clearAllLectures, refresh]);
 
   return (
     <ScheduleContext.Provider value={value}>

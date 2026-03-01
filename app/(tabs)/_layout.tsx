@@ -11,8 +11,12 @@ function NativeTabLayout() {
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
-        <Icon sf={{ default: 'calendar', selected: 'calendar.fill' }} />
+        <Icon sf={{ default: 'calendar', selected: 'calendar' }} />
         <Label>Schedule</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="routine">
+        <Icon sf={{ default: 'list.bullet', selected: 'list.bullet' }} />
+        <Label>Routine</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Icon sf={{ default: 'gearshape', selected: 'gearshape.fill' }} />
@@ -54,6 +58,15 @@ function ClassicTabLayout() {
           title: 'Schedule',
           tabBarIcon: ({ color }) => (
             <Ionicons name="calendar" size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="routine"
+        options={{
+          title: 'Routine',
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="list-outline" size={24} color={color} />
           ),
         }}
       />

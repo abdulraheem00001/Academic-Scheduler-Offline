@@ -51,10 +51,9 @@ function timeToMinutes(t: string): number {
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
 }
 
-function getCurrentLecture(lectures: Lecture[], day: string): Lecture | null {
+function getCurrentLecture(lectures: Lecture[], day: string, now = new Date()): Lecture | null {
   const today = getTodayShort();
   if (DAY_SHORT[day] !== today && day !== DAY_FULL[today]) return null;
-  const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
   return lectures.find(l => {
     const start = timeToMinutes(l.startTime);
@@ -75,6 +74,70 @@ function getTimeRemaining(lecture: Lecture): string {
     return m > 0 ? `${h}h ${m}m left` : `${h}h left`;
   }
   return `${diff} min left`;
+}
+
+function dayToJsIndex(day: string): number {
+  const dayName = DAY_FULL[day] ?? day;
+  const map: Record<string, number> = {
+    Sunday: 0,
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+  };
+  return map[dayName] ?? 0;
+}
+
+function formatTimeLeft(totalMs: number): string {
+  if (totalMs <= 0) return 'Starting now';
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const totalMinutes = Math.floor(totalSeconds / 60);
+
+  if (totalMinutes < 60) {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins}m ${secs}s left`;
+  }
+
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return m > 0 ? `${h}h ${m}m left` : `${h}h left`;
+}
+
+function getNextLecture(lectures: Lecture[], now = new Date()): { lecture: Lecture; msLeft: number; startsAt: Date } | null {
+  if (lectures.length === 0) return null;
+
+  const nowDay = now.getDay();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  const nowMs = now.getTime();
+
+  let best: { lecture: Lecture; msLeft: number; startsAt: Date } | null = null;
+
+  for (const lecture of lectures) {
+    const lectureDay = dayToJsIndex(lecture.day);
+    const startMins = timeToMinutes(lecture.startTime);
+
+    let dayOffset = lectureDay - nowDay;
+    if (dayOffset < 0 || (dayOffset === 0 && startMins <= nowMins)) {
+      dayOffset += 7;
+    }
+
+    const startsAt = new Date(now);
+    startsAt.setDate(now.getDate() + dayOffset);
+    startsAt.setHours(Math.floor(startMins / 60), startMins % 60, 0, 0);
+    const msLeft = startsAt.getTime() - nowMs;
+
+    if (!best || msLeft < best.msLeft) {
+      const startsAt = new Date(now);
+      startsAt.setDate(now.getDate() + dayOffset);
+      startsAt.setHours(Math.floor(startMins / 60), startMins % 60, 0, 0);
+      best = { lecture, msLeft, startsAt };
+    }
+  }
+
+  return best;
 }
 
 function formatTime(t: string): string {
@@ -194,16 +257,18 @@ export default function ScheduleScreen() {
   const insets = useSafeAreaInsets();
   const { lectures, loading, removeLecture, toggleLectureReminder } = useSchedule();
   const [selectedDay, setSelectedDay] = useState(getTodayShort());
-  const [tick, setTick] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
-    const iv = setInterval(() => setTick(t => t + 1), 60000);
+    const iv = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(iv);
   }, []);
 
+  const now = new Date(nowMs);
   const filtered = lectures.filter(l => DAY_SHORT[l.day] === selectedDay || l.day === DAY_FULL[selectedDay]);
-  const currentLecture = getCurrentLecture(filtered, DAY_FULL[selectedDay]);
+  const currentLecture = getCurrentLecture(filtered, DAY_FULL[selectedDay], now);
+  const nextLecture = getNextLecture(lectures, now);
 
   const handleDayPress = useCallback((day: string) => {
     Haptics.selectionAsync();
@@ -276,6 +341,21 @@ export default function ScheduleScreen() {
           );
         })}
       </ScrollView>
+
+      {nextLecture && (
+        <View style={styles.nextLectureBanner}>
+          <View style={styles.nextLectureHeader}>
+            <Ionicons name="time-outline" size={14} color={Colors.primary} />
+            <Text style={styles.nextLectureTitle}>Next Lecture</Text>
+          </View>
+          <Text style={styles.nextLectureCountdown}>
+            {formatTimeLeft(nextLecture.msLeft)}
+          </Text>
+          <Text style={styles.nextLectureMeta}>
+            {nextLecture.lecture.subject} · {DAY_SHORT[nextLecture.lecture.day] ?? nextLecture.lecture.day} · {formatTime(nextLecture.lecture.startTime)}
+          </Text>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.emptyState}>
@@ -366,6 +446,7 @@ const styles = StyleSheet.create({
   dayBar: {
     flexGrow: 0,
     marginBottom: 8,
+    height: 40,
   },
   dayBarContent: {
     paddingHorizontal: 16,
@@ -527,6 +608,40 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: Colors.border,
+  },
+  nextLectureBanner: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.primaryDim,
+    backgroundColor: 'rgba(138, 180, 248, 0.08)',
+    gap: 3,
+  },
+  nextLectureHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  nextLectureTitle: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: Colors.primary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  nextLectureCountdown: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 20,
+    color: Colors.text,
+    letterSpacing: -0.4,
+  },
+  nextLectureMeta: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: Colors.textSecondary,
   },
   emptyState: {
     flex: 1,
