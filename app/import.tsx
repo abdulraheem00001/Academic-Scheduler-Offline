@@ -18,11 +18,12 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { unzlibSync } from 'fflate';
+import * as XLSX from 'xlsx';
 import { useSchedule } from '@/context/ScheduleContext';
 import { InsertLecture } from '@/lib/database';
 import Colors from '@/constants/colors';
 
-type ImportMode = 'choose' | 'json' | 'pdf-info' | 'processing';
+type ImportMode = 'choose' | 'json' | 'excel' | 'pdf-info' | 'processing';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const SECTION_ORDER = [
@@ -318,6 +319,121 @@ function parseJsonLectures(text: string): InsertLecture[] {
   });
 }
 
+function normalizeHeader(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[\s_\-]/g, '');
+}
+
+function parseBool(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const s = String(value ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y';
+}
+
+function toFullDay(value: unknown): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const map: Record<string, string> = {
+    mon: 'Monday', monday: 'Monday',
+    tue: 'Tuesday', tues: 'Tuesday', tuesday: 'Tuesday',
+    wed: 'Wednesday', wednesday: 'Wednesday',
+    thu: 'Thursday', thur: 'Thursday', thurs: 'Thursday', thursday: 'Thursday',
+    fri: 'Friday', friday: 'Friday',
+    sat: 'Saturday', saturday: 'Saturday',
+    sun: 'Sunday', sunday: 'Sunday',
+  };
+  return map[raw.toLowerCase()] ?? null;
+}
+
+function toHHMM(totalMinutes: number): string {
+  const mins = ((totalMinutes % 1440) + 1440) % 1440;
+  const hh = Math.floor(mins / 60);
+  const mm = mins % 60;
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function parseSpreadsheetTime(value: unknown): string {
+  if (value == null) return '';
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return toHHMM(value.getHours() * 60 + value.getMinutes());
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value >= 0 && value < 1) return toHHMM(Math.round(value * 24 * 60));
+    const frac = value - Math.floor(value);
+    if (frac > 0) return toHHMM(Math.round(frac * 24 * 60));
+    if (value >= 0 && value <= 23) return toHHMM(Math.round(value * 60));
+    return '';
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return '';
+
+  const hhmm = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (hhmm) {
+    const h = parseInt(hhmm[1], 10);
+    const m = parseInt(hhmm[2], 10);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) return toHHMM(h * 60 + m);
+  }
+
+  const ampm = raw.match(/^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*([AP]M)$/i);
+  if (ampm) {
+    let h = parseInt(ampm[1], 10);
+    const m = parseInt(ampm[2] ?? '0', 10);
+    const mer = ampm[3].toUpperCase();
+    if (h < 1 || h > 12 || m < 0 || m > 59) return '';
+    if (mer === 'AM') {
+      if (h === 12) h = 0;
+    } else if (h < 12) {
+      h += 12;
+    }
+    return toHHMM(h * 60 + m);
+  }
+
+  const asNum = Number(raw);
+  if (!Number.isNaN(asNum)) return parseSpreadsheetTime(asNum);
+
+  return '';
+}
+
+function timeToMinutes(value: string): number {
+  const [h, m] = value.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function isExcelLikeFilename(name: string): boolean {
+  return /\.(xlsx|xls|csv)$/i.test(name);
+}
+
+function parseImportedLectureRows(rows: Array<Record<string, unknown>>): InsertLecture[] {
+  const out: InsertLecture[] = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const byKey = new Map<string, unknown>();
+    for (const [k, v] of Object.entries(row)) byKey.set(normalizeHeader(k), v);
+
+    const day = toFullDay(byKey.get('day') ?? byKey.get('weekday'));
+    const subject = String(byKey.get('subject') ?? byKey.get('course') ?? byKey.get('title') ?? '').trim();
+    const room = String(byKey.get('room') ?? byKey.get('venue') ?? byKey.get('classroom') ?? '').trim();
+    const teacher = String(byKey.get('teacher') ?? byKey.get('instructor') ?? byKey.get('faculty') ?? '').trim();
+    const startTime = parseSpreadsheetTime(byKey.get('starttime') ?? byKey.get('start') ?? '');
+    const endTime = parseSpreadsheetTime(byKey.get('endtime') ?? byKey.get('end') ?? '');
+    const reminderEnabled = parseBool(byKey.get('reminderenabled') ?? byKey.get('reminder')) ? 1 : 0;
+
+    if (!day && !subject && !room && !teacher && !startTime && !endTime) continue;
+    if (!day || !subject || !room || !teacher || !startTime || !endTime) {
+      throw new Error(`Row ${i + 2} is missing required fields (day, subject, room, teacher, startTime, endTime).`);
+    }
+    if (timeToMinutes(endTime) <= timeToMinutes(startTime)) {
+      throw new Error(`Row ${i + 2} has endTime earlier than startTime.`);
+    }
+
+    out.push({ day, subject, room, teacher, startTime, endTime, reminderEnabled });
+  }
+  return out;
+}
+
 export default function ImportScreen() {
   const insets = useSafeAreaInsets();
   const { importLectures } = useSchedule();
@@ -345,6 +461,47 @@ export default function ImportScreen() {
       setMode('pdf-info');
     } catch {
       Alert.alert('Error', 'Could not open file picker.');
+    }
+  };
+
+  const handleImportExcel = async () => {
+    setImporting(true);
+    try {
+      const pick = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        copyToCacheDirectory: true,
+      });
+      if (pick.canceled) return;
+      const asset = pick.assets[0];
+      if (!isExcelLikeFilename(asset.name ?? '')) {
+        throw new Error('Please select an Excel/CSV file (.xlsx, .xls, .csv).');
+      }
+
+      const base64 = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      if (!base64 || base64.length < 16) throw new Error('Selected file could not be read.');
+      const workbook = XLSX.read(base64, { type: 'base64', raw: false, cellDates: false });
+      const sheetName = workbook.SheetNames[0];
+      if (!sheetName) throw new Error('Excel file has no sheet.');
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
+      if (!rows.length) throw new Error('No rows found in first sheet. Add header row and data rows.');
+
+      const lectures = parseImportedLectureRows(rows);
+      if (!lectures.length) throw new Error('No valid lecture rows found in file.');
+      await importLectures(lectures);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        'Imported',
+        `${lectures.length} lecture${lectures.length !== 1 ? 's' : ''} imported successfully.`,
+        [{ text: 'Done', onPress: () => router.back() }]
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Could not import Excel.';
+      Alert.alert('Excel Import Failed', msg);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -452,6 +609,17 @@ export default function ImportScreen() {
             <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
           </TouchableOpacity>
 
+          <TouchableOpacity style={styles.optionCard} onPress={() => setMode('excel')}>
+            <View style={[styles.optionIcon, { backgroundColor: 'rgba(46, 204, 113, 0.12)' }]}>
+              <MaterialCommunityIcons name="file-excel-box" size={28} color="#2ECC71" />
+            </View>
+            <View style={styles.optionText}>
+              <Text style={styles.optionTitle}>Upload Excel</Text>
+              <Text style={styles.optionDesc}>Works with columns: day, subject, room, teacher, startTime, endTime</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+          </TouchableOpacity>
+
           <View style={styles.jsonSampleCard}>
             <Text style={styles.jsonSampleTitle}>JSON Format</Text>
             <Text style={styles.jsonSample}>{`[
@@ -492,6 +660,32 @@ export default function ImportScreen() {
               <>
                 <Ionicons name="cloud-upload-outline" size={18} color={Colors.bg} />
                 <Text style={styles.importBtnText}>Import Lectures</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </ScrollView>
+      )}
+
+      {mode === 'excel' && (
+        <ScrollView contentContainerStyle={[styles.content, { paddingBottom: botPad + 24 }]} keyboardShouldPersistTaps="handled">
+          <Text style={styles.subtitle}>Import lectures from Excel/CSV with this structure:</Text>
+          <View style={styles.jsonSampleCard}>
+            <Text style={styles.jsonSampleTitle}>Required Columns</Text>
+            <Text style={styles.jsonSample}>day, subject, room, teacher, startTime, endTime</Text>
+            <Text style={styles.jsonSampleTitle}>Example Row</Text>
+            <Text style={styles.jsonSample}>Monday | Theory of Automata | CR-35 | Ms. Hira Arshad | 11:00 | 12:20</Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.importBtn, importing && { opacity: 0.6 }]}
+            onPress={handleImportExcel}
+            disabled={importing}
+          >
+            {importing ? (
+              <ActivityIndicator color={Colors.bg} size="small" />
+            ) : (
+              <>
+                <Ionicons name="cloud-upload-outline" size={18} color={Colors.bg} />
+                <Text style={styles.importBtnText}>Choose Excel File</Text>
               </>
             )}
           </TouchableOpacity>

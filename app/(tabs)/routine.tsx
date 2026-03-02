@@ -23,6 +23,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSchedule } from '@/context/ScheduleContext';
+import type { AlertMode } from '@/context/ScheduleContext';
 import Colors from '@/constants/colors';
 
 type RoutineItem = {
@@ -47,6 +48,7 @@ type ImportedRoutine = {
   done: boolean;
   reminderEnabled: number;
 };
+type Meridiem = 'AM' | 'PM';
 
 const ROUTINE_KEY = 'unischedule_daily_routine';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -85,10 +87,57 @@ function validTime(t: string): boolean {
   return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
 }
 
-function normalizeTimeInput(value: string): string {
-  const digits = value.replace(/\D/g, '').slice(0, 4);
-  if (digits.length <= 2) return digits;
-  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+function toMeridiem(hhmm: string): Meridiem {
+  const hh = parseInt((hhmm.split(':')[0] ?? '0'), 10);
+  return hh >= 12 ? 'PM' : 'AM';
+}
+
+function parseTimeInput(value: string, is24Hour: boolean, meridiem: Meridiem): string {
+  const raw = value.trim();
+  if (!raw) return '';
+
+  const ampm = raw.match(/^(\d{1,2})(?::?(\d{1,2}))?\s*([AaPp])\.?\s*[Mm]\.?$/);
+  if (ampm) {
+    let hh = parseInt(ampm[1], 10);
+    const mm = parseInt(ampm[2] ?? '0', 10);
+    const mer = ampm[3].toUpperCase();
+    if (hh < 1 || hh > 12 || mm < 0 || mm > 59) return '';
+    if (mer === 'AM') {
+      if (hh === 12) hh = 0;
+    } else if (hh < 12) {
+      hh += 12;
+    }
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+
+  let hh = 0;
+  let mm = 0;
+  const plain = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (plain) {
+    hh = parseInt(plain[1], 10);
+    mm = parseInt(plain[2], 10);
+  } else if (/^\d{3,4}$/.test(raw)) {
+    hh = raw.length === 3 ? parseInt(raw[0], 10) : parseInt(raw.slice(0, 2), 10);
+    mm = parseInt(raw.slice(-2), 10);
+  } else if (/^\d{1,2}$/.test(raw)) {
+    hh = parseInt(raw, 10);
+    mm = 0;
+  } else {
+    return '';
+  }
+  if (Number.isNaN(hh) || Number.isNaN(mm) || mm < 0 || mm > 59) return '';
+  if (is24Hour) {
+    if (hh < 0 || hh > 23) return '';
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+
+  if (hh < 1 || hh > 12) return '';
+  if (meridiem === 'AM') {
+    if (hh === 12) hh = 0;
+  } else if (hh < 12) {
+    hh += 12;
+  }
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
 function parseBool(value: unknown): boolean {
@@ -300,57 +349,93 @@ function getRoutineNotificationIds(item: RoutineItem): string[] {
   return [];
 }
 
-async function cancelRoutineNotifications(item: RoutineItem): Promise<void> {
-  const ids = getRoutineNotificationIds(item);
-  await Promise.all(ids.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+function getRoutineNotificationIdentifier(item: RoutineItem, kind: 'remind' | 'start' | 'end'): string {
+  return `routine-${item.id}-${kind}`;
 }
 
-async function scheduleRoutineNotifications(item: RoutineItem, leadMins: number): Promise<string[] | null> {
+async function cancelLegacyRoutineDuplicates(item: RoutineItem): Promise<void> {
+  const body = `${item.day} ${item.startTime} - ${item.endTime}${item.notes ? ` • ${item.notes}` : ''}`;
+  const startTitle = `Start now: ${item.title}`;
+  const upcomingTitle = `Upcoming routine: ${item.title}`;
+  const endTitle = `Ended: ${item.title}`;
+  const all = await Notifications.getAllScheduledNotificationsAsync().catch(() => []);
+  const toCancel = all
+    .filter(n =>
+      (n.content.title === startTitle || n.content.title === upcomingTitle || n.content.title === endTitle) &&
+      n.content.body === body
+    )
+    .map(n => n.identifier);
+  await Promise.all(toCancel.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+}
+
+async function cancelRoutineNotifications(item: RoutineItem): Promise<void> {
+  const ids = getRoutineNotificationIds(item);
+  const deterministicIds = [
+    getRoutineNotificationIdentifier(item, 'remind'),
+    getRoutineNotificationIdentifier(item, 'start'),
+    getRoutineNotificationIdentifier(item, 'end'),
+  ];
+  await Promise.all(
+    [...ids, ...deterministicIds].map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {}))
+  );
+  await cancelLegacyRoutineDuplicates(item);
+}
+
+async function scheduleRoutineNotifications(item: RoutineItem, mode: AlertMode, leadMins: number): Promise<string[] | null> {
   const hasPerms = await ensureNotificationPermission();
   if (!hasPerms) return null;
+
+  await cancelRoutineNotifications(item);
 
   const body = `${item.day} ${item.startTime} - ${item.endTime}${item.notes ? ` • ${item.notes}` : ''}`;
   const ids: string[] = [];
 
   if (leadMins > 0) {
-    const leadTrigger = getWeeklyTrigger(item.day, item.startTime, leadMins);
-    if (leadTrigger) {
+    const remindTrigger = getWeeklyTrigger(item.day, item.startTime, leadMins);
+    if (remindTrigger) {
       const id = await Notifications.scheduleNotificationAsync({
+        identifier: getRoutineNotificationIdentifier(item, 'remind'),
         content: {
           title: `Upcoming routine: ${item.title}`,
           body,
           sound: 'default',
         },
-        trigger: leadTrigger,
+        trigger: remindTrigger,
       });
       ids.push(id);
     }
   }
 
-  const startTrigger = getWeeklyTrigger(item.day, item.startTime, 0);
-  if (startTrigger) {
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: `Start now: ${item.title}`,
-        body,
-        sound: 'default',
-      },
-      trigger: startTrigger,
-    });
-    ids.push(id);
+  if (mode === 'start' || mode === 'both') {
+    const startTrigger = getWeeklyTrigger(item.day, item.startTime, 0);
+    if (startTrigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        identifier: getRoutineNotificationIdentifier(item, 'start'),
+        content: {
+          title: `Start now: ${item.title}`,
+          body,
+          sound: 'default',
+        },
+        trigger: startTrigger,
+      });
+      ids.push(id);
+    }
   }
 
-  const endTrigger = getWeeklyTrigger(item.day, item.endTime, 0);
-  if (endTrigger) {
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: `Ended: ${item.title}`,
-        body,
-        sound: 'default',
-      },
-      trigger: endTrigger,
-    });
-    ids.push(id);
+  if (mode === 'end' || mode === 'both') {
+    const endTrigger = getWeeklyTrigger(item.day, item.endTime, 0);
+    if (endTrigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        identifier: getRoutineNotificationIdentifier(item, 'end'),
+        content: {
+          title: `Ended: ${item.title}`,
+          body,
+          sound: 'default',
+        },
+        trigger: endTrigger,
+      });
+      ids.push(id);
+    }
   }
 
   return ids.length > 0 ? ids : null;
@@ -358,7 +443,7 @@ async function scheduleRoutineNotifications(item: RoutineItem, leadMins: number)
 
 export default function RoutineScreen() {
   const insets = useSafeAreaInsets();
-  const { reminderLeadTime } = useSchedule();
+  const { routineAlertMode, reminderLeadTime } = useSchedule();
 
   const [items, setItems] = useState<RoutineItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -371,6 +456,9 @@ export default function RoutineScreen() {
   const [formDay, setFormDay] = useState(getTodayShort());
   const [startTime, setStartTime] = useState('08:00');
   const [endTime, setEndTime] = useState('09:00');
+  const [is24Hour, setIs24Hour] = useState(true);
+  const [startMeridiem, setStartMeridiem] = useState<Meridiem>('AM');
+  const [endMeridiem, setEndMeridiem] = useState<Meridiem>('AM');
   const [notes, setNotes] = useState('');
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [importOptionsModalOpen, setImportOptionsModalOpen] = useState(false);
@@ -379,6 +467,7 @@ export default function RoutineScreen() {
   const [importJsonText, setImportJsonText] = useState('');
   const [importing, setImporting] = useState(false);
   const documentPickingRef = useRef(false);
+  const routineResyncingRef = useRef(false);
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const bottomPad = Platform.OS === 'web' ? 84 + 34 : insets.bottom + 84;
@@ -422,6 +511,52 @@ export default function RoutineScreen() {
     loadRoutine();
   }, [loadRoutine]);
 
+  useEffect(() => {
+    const resync = async () => {
+      if (loading || routineResyncingRef.current) return;
+      const enabledItems = items.filter(i => !!i.reminderEnabled);
+      if (!enabledItems.length) return;
+
+      routineResyncingRef.current = true;
+      try {
+        const hasPerms = await ensureNotificationPermission();
+        if (!hasPerms) return;
+
+        let changed = false;
+        const nextItems: RoutineItem[] = [];
+
+        for (const item of items) {
+          if (!item.reminderEnabled) {
+            nextItems.push(item);
+            continue;
+          }
+
+          await cancelRoutineNotifications(item);
+          const scheduledIds = await scheduleRoutineNotifications(item, routineAlertMode, reminderLeadTime);
+          const normalizedIds = scheduledIds ?? [];
+          const prevIds = getRoutineNotificationIds(item);
+          const sameIds = prevIds.length === normalizedIds.length && prevIds.every((id, idx) => id === normalizedIds[idx]);
+
+          const updated = {
+            ...item,
+            reminderIds: normalizedIds,
+            reminderId: normalizedIds[0] ?? null,
+          };
+          if (!sameIds) changed = true;
+          nextItems.push(updated);
+        }
+
+        if (changed) {
+          await persistRoutine(nextItems);
+        }
+      } finally {
+        routineResyncingRef.current = false;
+      }
+    };
+
+    void resync();
+  }, [loading, routineAlertMode, reminderLeadTime, items, persistRoutine]);
+
   useFocusEffect(
     useCallback(() => {
       void loadRoutine();
@@ -439,6 +574,9 @@ export default function RoutineScreen() {
     setFormDay(getTodayShort());
     setStartTime('08:00');
     setEndTime('09:00');
+    setIs24Hour(true);
+    setStartMeridiem('AM');
+    setEndMeridiem('AM');
     setNotes('');
     setReminderEnabled(false);
   };
@@ -455,6 +593,8 @@ export default function RoutineScreen() {
     setFormDay(DAY_SHORT[item.day] ?? 'Mon');
     setStartTime(item.startTime);
     setEndTime(item.endTime);
+    setStartMeridiem(toMeridiem(item.startTime));
+    setEndMeridiem(toMeridiem(item.endTime));
     setNotes(item.notes);
     setReminderEnabled(!!item.reminderEnabled);
     setModalOpen(true);
@@ -490,7 +630,7 @@ export default function RoutineScreen() {
         };
 
         if (item.reminderEnabled) {
-          const ids = await scheduleRoutineNotifications(item, reminderLeadTime);
+          const ids = await scheduleRoutineNotifications(item, routineAlertMode, reminderLeadTime);
           item.reminderIds = ids ?? [];
           item.reminderId = ids?.[0] ?? null;
           item.reminderEnabled = ids && ids.length > 0 ? 1 : 0;
@@ -565,11 +705,14 @@ export default function RoutineScreen() {
       Alert.alert('Missing title', 'Please enter a routine title.');
       return;
     }
-    if (!validTime(startTime.trim()) || !validTime(endTime.trim())) {
-      Alert.alert('Invalid time', 'Use 24-hour format like 07:30 and 18:45.');
+    const normalizedStartTime = parseTimeInput(startTime, is24Hour, startMeridiem);
+    const normalizedEndTime = parseTimeInput(endTime, is24Hour, endMeridiem);
+
+    if (!normalizedStartTime || !normalizedEndTime) {
+      Alert.alert('Invalid time', is24Hour ? 'Use 24-hour format (e.g. 14:30).' : 'Use AM/PM format (e.g. 2:30 PM).');
       return;
     }
-    if (timeToMinutes(endTime.trim()) <= timeToMinutes(startTime.trim())) {
+    if (timeToMinutes(normalizedEndTime) <= timeToMinutes(normalizedStartTime)) {
       Alert.alert('Invalid range', 'End time must be later than start time.');
       return;
     }
@@ -586,8 +729,8 @@ export default function RoutineScreen() {
         ...prev,
         title: title.trim(),
         day,
-        startTime: startTime.trim(),
-        endTime: endTime.trim(),
+        startTime: normalizedStartTime,
+        endTime: normalizedEndTime,
         notes: notes.trim(),
         reminderEnabled: reminderEnabled ? 1 : 0,
         reminderIds: [],
@@ -595,7 +738,7 @@ export default function RoutineScreen() {
       };
 
       if (reminderEnabled) {
-        const scheduledIds = await scheduleRoutineNotifications(nextBase, reminderLeadTime);
+        const scheduledIds = await scheduleRoutineNotifications(nextBase, routineAlertMode, reminderLeadTime);
         if (!scheduledIds) Alert.alert('Reminder disabled', 'Notification permission not granted.');
         nextBase.reminderIds = scheduledIds ?? [];
         nextBase.reminderId = scheduledIds?.[0] ?? null;
@@ -609,8 +752,8 @@ export default function RoutineScreen() {
         id,
         title: title.trim(),
         day,
-        startTime: startTime.trim(),
-        endTime: endTime.trim(),
+        startTime: normalizedStartTime,
+        endTime: normalizedEndTime,
         notes: notes.trim(),
         done: false,
         reminderEnabled: reminderEnabled ? 1 : 0,
@@ -619,7 +762,7 @@ export default function RoutineScreen() {
       };
 
       if (reminderEnabled) {
-        const scheduledIds = await scheduleRoutineNotifications(nextItem, reminderLeadTime);
+        const scheduledIds = await scheduleRoutineNotifications(nextItem, routineAlertMode, reminderLeadTime);
         if (!scheduledIds) Alert.alert('Reminder disabled', 'Notification permission not granted.');
         nextItem.reminderIds = scheduledIds ?? [];
         nextItem.reminderId = scheduledIds?.[0] ?? null;
@@ -647,7 +790,7 @@ export default function RoutineScreen() {
       return;
     }
 
-    const ids = await scheduleRoutineNotifications(item, reminderLeadTime);
+    const ids = await scheduleRoutineNotifications(item, routineAlertMode, reminderLeadTime);
     if (!ids) {
       Alert.alert('Reminder disabled', 'Notification permission not granted.');
       return;
@@ -726,29 +869,32 @@ export default function RoutineScreen() {
         ListEmptyComponent={<Text style={styles.emptyText}>{emptyText}</Text>}
         renderItem={({ item }) => (
           <View style={[styles.itemCard, isCurrentRoutine(item, now) && styles.itemCardCurrent]}>
-            <TouchableOpacity
+            <View style={{display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 12}}>
+              <TouchableOpacity
               style={[styles.doneToggle, item.done && styles.doneToggleOn]}
               onPress={() => toggleDone(item.id, !item.done)}
               activeOpacity={0.8}
-            >
+              >
               <Ionicons name={item.done ? 'checkmark' : 'ellipse-outline'} size={16} color={item.done ? Colors.bg : Colors.textMuted} />
-            </TouchableOpacity>
+              </TouchableOpacity>
 
-            <View style={styles.itemBody}>
-              <View style={styles.itemTopRow}>
-                <Text style={[styles.itemTitle, item.done && styles.itemDone]}>{item.title}</Text>
-                {isCurrentRoutine(item, now) && (
-                  <View style={styles.liveBadge}>
-                    <View style={styles.liveDot} />
-                    <Text style={styles.liveText}>{currentLeft(item, now)}</Text>
-                  </View>
-                )}
+              <View style={styles.itemBody}>
+                <View style={styles.itemTopRow}>
+                  <Text style={[styles.itemTitle, item.done && styles.itemDone]}>{item.title}</Text>
+                  {isCurrentRoutine(item, now) && (
+                    <View style={styles.liveBadge}>
+                      <View style={styles.liveDot} />
+                      <Text style={styles.liveText}>{currentLeft(item, now)}</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.itemMeta}>
+                  {formatTime(item.startTime)} - {formatTime(item.endTime)}{item.notes ? ` • ${item.notes}` : ''}
+                </Text>
               </View>
-              <Text style={styles.itemMeta}>
-                {formatTime(item.startTime)} - {formatTime(item.endTime)}{item.notes ? ` • ${item.notes}` : ''}
-              </Text>
-
-              <View style={styles.itemFooter}>
+            </View>
+            
+            <View style={styles.itemFooter}>
                 <View style={styles.reminderRow}>
                   <Ionicons name="notifications-outline" size={14} color={Colors.textMuted} />
                   <Text style={styles.reminderLabel}>Reminder</Text>
@@ -769,7 +915,6 @@ export default function RoutineScreen() {
                     <Ionicons name="trash-outline" size={16} color={Colors.danger} />
                   </TouchableOpacity>
                 </View>
-              </View>
             </View>
           </View>
         )}
@@ -805,27 +950,82 @@ export default function RoutineScreen() {
               placeholderTextColor={Colors.textMuted}
             />
 
-            <View style={styles.timeRow}>
-              <TextInput
-                style={[styles.input, styles.timeInput]}
-                value={startTime}
-                onChangeText={v => setStartTime(normalizeTimeInput(v))}
-                placeholder="Start HH:MM"
-                placeholderTextColor={Colors.textMuted}
-                keyboardType="numeric"
-                inputMode="numeric"
-                maxLength={5}
-              />
-              <TextInput
-                style={[styles.input, styles.timeInput]}
-                value={endTime}
-                onChangeText={v => setEndTime(normalizeTimeInput(v))}
-                placeholder="End HH:MM"
-                placeholderTextColor={Colors.textMuted}
-                keyboardType="numeric"
-                inputMode="numeric"
-                maxLength={5}
-              />
+            <View style={styles.modeRow}>
+              <Text style={styles.modeLabel}>Time Format</Text>
+              <View style={styles.modeSwitch}>
+                <TouchableOpacity
+                  style={[styles.modeChip, is24Hour && styles.modeChipActive]}
+                  onPress={() => setIs24Hour(true)}
+                >
+                  <Text style={[styles.modeChipText, is24Hour && styles.modeChipTextActive]}>24H</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modeChip, !is24Hour && styles.modeChipActive]}
+                  onPress={() => setIs24Hour(false)}
+                >
+                  <Text style={[styles.modeChipText, !is24Hour && styles.modeChipTextActive]}>AM/PM</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.timeBlock}>
+              <Text style={styles.timeFieldLabel}>Start Time</Text>
+              <View style={styles.timeInputWrap}>
+                <TextInput
+                  style={[styles.input, styles.timeInput]}
+                  value={startTime}
+                  onChangeText={setStartTime}
+                  placeholder={is24Hour ? 'e.g. 14:00' : 'e.g. 2:00'}
+                  placeholderTextColor={Colors.textMuted}
+                  keyboardType="numbers-and-punctuation"
+                  selectionColor={Colors.primary}
+                  cursorColor={Colors.primary}
+                  underlineColorAndroid="transparent"
+                />
+                {!is24Hour && (
+                  <View style={styles.meridiemRow}>
+                    {(['AM', 'PM'] as const).map(mer => (
+                      <TouchableOpacity
+                        key={`routine-start-${mer}`}
+                        style={[styles.meridiemChip, startMeridiem === mer && styles.meridiemChipActive]}
+                        onPress={() => setStartMeridiem(mer)}
+                      >
+                        <Text style={[styles.meridiemText, startMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </View>
+
+            <View style={styles.timeBlock}>
+              <Text style={styles.timeFieldLabel}>End Time</Text>
+              <View style={styles.timeInputWrap}>
+                <TextInput
+                  style={[styles.input, styles.timeInput]}
+                  value={endTime}
+                  onChangeText={setEndTime}
+                  placeholder={is24Hour ? 'e.g. 15:30' : 'e.g. 3:30'}
+                  placeholderTextColor={Colors.textMuted}
+                  keyboardType="numbers-and-punctuation"
+                  selectionColor={Colors.primary}
+                  cursorColor={Colors.primary}
+                  underlineColorAndroid="transparent"
+                />
+                {!is24Hour && (
+                  <View style={styles.meridiemRow}>
+                    {(['AM', 'PM'] as const).map(mer => (
+                      <TouchableOpacity
+                        key={`routine-end-${mer}`}
+                        style={[styles.meridiemChip, endMeridiem === mer && styles.meridiemChipActive]}
+                        onPress={() => setEndMeridiem(mer)}
+                      >
+                        <Text style={[styles.meridiemText, endMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
             </View>
 
             <TextInput
@@ -1087,8 +1287,6 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   itemCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -1257,12 +1455,84 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     fontSize: 14,
   },
-  timeRow: {
+  modeRow: {
     flexDirection: 'row',
-    gap: 8,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modeLabel: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  modeSwitch: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface2,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 3,
+    gap: 4,
+  },
+  modeChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 7,
+  },
+  modeChipActive: {
+    backgroundColor: Colors.primary,
+  },
+  modeChipText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  modeChipTextActive: {
+    color: Colors.bg,
+  },
+  timeBlock: {
+    gap: 6,
+  },
+  timeFieldLabel: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  timeInputWrap: {
+    width: '100%',
   },
   timeInput: {
+    width: '100%',
+  },
+  meridiemRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 8,
+  },
+  meridiemChip: {
     flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+  },
+  meridiemChipActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  meridiemText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  meridiemTextActive: {
+    color: Colors.bg,
   },
   notesInput: {
     minHeight: 74,
@@ -1360,6 +1630,3 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 });
-
-
-

@@ -17,6 +17,76 @@ import { useSchedule } from '@/context/ScheduleContext';
 import Colors from '@/constants/colors';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+type Meridiem = 'AM' | 'PM';
+
+function normalizeDialerInput(value: string): string {
+  const digits = value.replace(/\D/g, '').slice(0, 4);
+  if (digits.length <= 2) return digits;
+  if (digits.length === 3) return `0${digits[0]}:${digits.slice(1)}`;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function toMeridiem(hhmm: string): Meridiem {
+  const hh = parseInt((hhmm.split(':')[0] ?? '0'), 10);
+  return hh >= 12 ? 'PM' : 'AM';
+}
+
+function parseTimeFromMode(value: string, is24Hour: boolean, meridiem: Meridiem): string {
+  const raw = value.trim();
+  if (!raw) return '';
+
+  let hh = 0;
+  let mm = 0;
+  if (raw.includes(':')) {
+    const m = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+    if (!m) return '';
+    hh = parseInt(m[1], 10);
+    mm = parseInt(m[2], 10);
+  } else if (/^\d{3,4}$/.test(raw)) {
+    if (raw.length === 3) {
+      hh = parseInt(raw[0], 10);
+      mm = parseInt(raw.slice(1), 10);
+    } else {
+      hh = parseInt(raw.slice(0, 2), 10);
+      mm = parseInt(raw.slice(2), 10);
+    }
+  } else if (/^\d{1,2}$/.test(raw)) {
+    hh = parseInt(raw, 10);
+    mm = 0;
+  } else {
+    return '';
+  }
+
+  if (Number.isNaN(hh) || Number.isNaN(mm) || mm < 0 || mm > 59) return '';
+
+  if (is24Hour) {
+    if (hh < 0 || hh > 23) return '';
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+
+  if (hh < 1 || hh > 12) return '';
+  if (meridiem === 'AM') {
+    if (hh === 12) hh = 0;
+  } else if (hh < 12) {
+    hh += 12;
+  }
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function to12HourParts(hhmm: string): { time: string; meridiem: Meridiem } {
+  const m = hhmm.match(/^(\d{2}):(\d{2})$/);
+  if (!m) return { time: '12:00', meridiem: 'AM' };
+  const hh = parseInt(m[1], 10);
+  const mm = m[2];
+  const meridiem: Meridiem = hh >= 12 ? 'PM' : 'AM';
+  const h12 = hh % 12 === 0 ? 12 : hh % 12;
+  return { time: `${String(h12).padStart(2, '0')}:${mm}`, meridiem };
+}
+
+function toMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
 
 function Field({ label, value, onChange, placeholder, hint }: {
   label: string;
@@ -54,32 +124,60 @@ export default function EditLectureScreen() {
   const [teacher, setTeacher] = useState(existing?.teacher ?? '');
   const [startTime, setStartTime] = useState(existing?.startTime ?? '09:00');
   const [endTime, setEndTime] = useState(existing?.endTime ?? '10:20');
+  const [is24Hour, setIs24Hour] = useState(true);
+  const [startMeridiem, setStartMeridiem] = useState<Meridiem>(toMeridiem(existing?.startTime ?? '09:00'));
+  const [endMeridiem, setEndMeridiem] = useState<Meridiem>(toMeridiem(existing?.endTime ?? '10:20'));
   const [saving, setSaving] = useState(false);
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const botPad = Platform.OS === 'web' ? 34 : insets.bottom;
 
-  const validate = () => {
-    if (!subject.trim()) { Alert.alert('Missing field', 'Please enter a subject.'); return false; }
-    if (!room.trim()) { Alert.alert('Missing field', 'Please enter a room.'); return false; }
-    if (!teacher.trim()) { Alert.alert('Missing field', 'Please enter a teacher name.'); return false; }
-    const timeRe = /^\d{1,2}:\d{2}$/;
-    if (!timeRe.test(startTime) || !timeRe.test(endTime)) {
-      Alert.alert('Invalid time', 'Use HH:MM format (e.g. 09:00).');
-      return false;
+  const switchTimeFormat = (next24Hour: boolean) => {
+    if (next24Hour === is24Hour) return;
+    const normalizedStart = parseTimeFromMode(startTime, is24Hour, startMeridiem) || (existing?.startTime ?? '09:00');
+    const normalizedEnd = parseTimeFromMode(endTime, is24Hour, endMeridiem) || (existing?.endTime ?? '10:20');
+
+    if (next24Hour) {
+      setStartTime(normalizedStart);
+      setEndTime(normalizedEnd);
+    } else {
+      const startParts = to12HourParts(normalizedStart);
+      const endParts = to12HourParts(normalizedEnd);
+      setStartTime(startParts.time);
+      setStartMeridiem(startParts.meridiem);
+      setEndTime(endParts.time);
+      setEndMeridiem(endParts.meridiem);
     }
-    return true;
+    setIs24Hour(next24Hour);
+  };
+
+  const validate = (): { start: string; end: string } | null => {
+    if (!subject.trim()) { Alert.alert('Missing field', 'Please enter a subject.'); return null; }
+    if (!room.trim()) { Alert.alert('Missing field', 'Please enter a room.'); return null; }
+    if (!teacher.trim()) { Alert.alert('Missing field', 'Please enter a teacher name.'); return null; }
+    const normalizedStart = parseTimeFromMode(startTime, is24Hour, startMeridiem);
+    const normalizedEnd = parseTimeFromMode(endTime, is24Hour, endMeridiem);
+    if (!normalizedStart || !normalizedEnd) {
+      Alert.alert('Invalid time', is24Hour ? 'Use HH:MM in 24-hour format (e.g. 14:00).' : 'Use HH:MM with AM/PM (e.g. 02:00 PM).');
+      return null;
+    }
+    if (toMinutes(normalizedEnd) <= toMinutes(normalizedStart)) {
+      Alert.alert('Invalid range', 'End time must be later than start time.');
+      return null;
+    }
+    return { start: normalizedStart, end: normalizedEnd };
   };
 
   const handleSave = async () => {
-    if (!validate()) return;
+    const normalized = validate();
+    if (!normalized) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setSaving(true);
     try {
       if (isEdit && existing) {
-        await editLecture({ ...existing, day, subject, room, teacher, startTime, endTime });
+        await editLecture({ ...existing, day, subject, room, teacher, startTime: normalized.start, endTime: normalized.end });
       } else {
-        await addLecture({ day, subject, room, teacher, startTime, endTime, reminderEnabled: 0 });
+        await addLecture({ day, subject, room, teacher, startTime: normalized.start, endTime: normalized.end, reminderEnabled: 0 });
       }
       router.back();
     } catch (e) {
@@ -135,6 +233,24 @@ export default function EditLectureScreen() {
         <Field label="Room" value={room} onChange={setRoom} placeholder="e.g. CR-35 - Third Floor" />
         <Field label="Teacher" value={teacher} onChange={setTeacher} placeholder="e.g. Ms. Hira Arshad" />
 
+        <View style={styles.modeRow}>
+          <Text style={styles.modeLabel}>Time Format</Text>
+          <View style={styles.modeSwitch}>
+            <TouchableOpacity
+              style={[styles.modeChip, is24Hour && styles.modeChipActive]}
+              onPress={() => switchTimeFormat(true)}
+            >
+              <Text style={[styles.modeChipText, is24Hour && styles.modeChipTextActive]}>24H</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modeChip, !is24Hour && styles.modeChipActive]}
+              onPress={() => switchTimeFormat(false)}
+            >
+              <Text style={[styles.modeChipText, !is24Hour && styles.modeChipTextActive]}>AM/PM</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         <View style={styles.timeRow}>
           <View style={styles.timeField}>
             <Text style={styles.label}>Start Time</Text>
@@ -145,7 +261,21 @@ export default function EditLectureScreen() {
               placeholder="HH:MM"
               placeholderTextColor={Colors.textMuted}
               keyboardType="numbers-and-punctuation"
+              selectTextOnFocus
             />
+            {!is24Hour && (
+              <View style={styles.meridiemRow}>
+                {(['AM', 'PM'] as const).map(mer => (
+                  <TouchableOpacity
+                    key={`start-${mer}`}
+                    style={[styles.meridiemChip, startMeridiem === mer && styles.meridiemChipActive]}
+                    onPress={() => setStartMeridiem(mer)}
+                  >
+                    <Text style={[styles.meridiemText, startMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </View>
           <Ionicons name="arrow-forward" size={16} color={Colors.textMuted} style={{ marginTop: 32 }} />
           <View style={styles.timeField}>
@@ -157,11 +287,27 @@ export default function EditLectureScreen() {
               placeholder="HH:MM"
               placeholderTextColor={Colors.textMuted}
               keyboardType="numbers-and-punctuation"
+              selectTextOnFocus
             />
+            {!is24Hour && (
+              <View style={styles.meridiemRow}>
+                {(['AM', 'PM'] as const).map(mer => (
+                  <TouchableOpacity
+                    key={`end-${mer}`}
+                    style={[styles.meridiemChip, endMeridiem === mer && styles.meridiemChipActive]}
+                    onPress={() => setEndMeridiem(mer)}
+                  >
+                    <Text style={[styles.meridiemText, endMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
           </View>
         </View>
 
-        <Text style={styles.timeHint}>Use 24-hour format (e.g. 14:00 for 2:00 PM)</Text>
+        <Text style={styles.timeHint}>
+          Dialer input: type digits and it formats as HH:MM. Toggle between 24H and AM/PM above.
+        </Text>
       </ScrollView>
     </View>
   );
@@ -238,6 +384,44 @@ const styles = StyleSheet.create({
   field: {
     marginBottom: 16,
   },
+  modeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modeLabel: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 13,
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  modeSwitch: {
+    flexDirection: 'row',
+    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: 3,
+    gap: 4,
+  },
+  modeChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 7,
+  },
+  modeChipActive: {
+    backgroundColor: Colors.primary,
+  },
+  modeChipText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  modeChipTextActive: {
+    color: Colors.bg,
+  },
   label: {
     fontFamily: 'Inter_500Medium',
     fontSize: 13,
@@ -271,6 +455,32 @@ const styles = StyleSheet.create({
   },
   timeField: {
     flex: 1,
+  },
+  meridiemRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 8,
+  },
+  meridiemChip: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    alignItems: 'center',
+  },
+  meridiemChipActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  meridiemText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  meridiemTextActive: {
+    color: Colors.bg,
   },
   timeHint: {
     fontFamily: 'Inter_400Regular',

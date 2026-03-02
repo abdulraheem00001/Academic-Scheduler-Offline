@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo } from 'react';
+﻿import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo } from 'react';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import {
@@ -24,11 +24,23 @@ Notifications.setNotificationHandler({
   }),
 });
 
+const ALERT_MODES = ['none', 'start', 'end', 'both'] as const;
+export type AlertMode = typeof ALERT_MODES[number];
+
+function parseAlertMode(value: string | null): AlertMode {
+  if (value && ALERT_MODES.includes(value as AlertMode)) return value as AlertMode;
+  return 'both';
+}
+
 interface ScheduleContextValue {
   lectures: Lecture[];
   loading: boolean;
   reminderLeadTime: number;
+  lectureAlertMode: AlertMode;
+  routineAlertMode: AlertMode;
   setReminderLeadTime: (mins: number) => Promise<void>;
+  setLectureAlertMode: (mode: AlertMode) => Promise<void>;
+  setRoutineAlertMode: (mode: AlertMode) => Promise<void>;
   addLecture: (lecture: InsertLecture) => Promise<void>;
   editLecture: (lecture: Lecture) => Promise<void>;
   removeLecture: (id: number) => Promise<void>;
@@ -53,6 +65,24 @@ function getDayNumber(day: string): number {
   return days[day] ?? -1;
 }
 
+function getWeeklyTrigger(day: string, time: string, offsetMins = 0): { weekday: number; hour: number; minute: number } | null {
+  const dayNum = getDayNumber(day);
+  if (dayNum < 0) return null;
+
+  let mins = timeToMinutes(time) - offsetMins;
+  let triggerDay = dayNum;
+  while (mins < 0) {
+    mins += 24 * 60;
+    triggerDay = (triggerDay + 6) % 7;
+  }
+
+  return {
+    weekday: triggerDay === 0 ? 1 : triggerDay + 1,
+    hour: Math.floor(mins / 60),
+    minute: mins % 60,
+  };
+}
+
 async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
   const { status: existing } = await Notifications.getPermissionsAsync();
@@ -61,40 +91,87 @@ async function requestNotificationPermissions(): Promise<boolean> {
   return status === 'granted';
 }
 
-async function scheduleNotification(lecture: Lecture, leadTime: number): Promise<string | null> {
+async function scheduleLectureNotifications(lecture: Lecture, mode: AlertMode, leadTime: number): Promise<string[] | null> {
   const granted = await requestNotificationPermissions();
   if (!granted) return null;
 
-  const dayNum = getDayNumber(lecture.day);
-  if (dayNum < 0) return null;
-
-  const startMins = timeToMinutes(lecture.startTime);
-  const notifyMins = startMins - leadTime;
-  const notifyHour = Math.floor(notifyMins / 60);
-  const notifyMinute = notifyMins % 60;
-
-  if (notifyHour < 0 || notifyMinute < 0) return null;
-
+  await Notifications.cancelScheduledNotificationAsync(`lecture-${lecture.id}-remind`).catch(() => {});
+  await Notifications.cancelScheduledNotificationAsync(`lecture-${lecture.id}-start`).catch(() => {});
+  await Notifications.cancelScheduledNotificationAsync(`lecture-${lecture.id}-end`).catch(() => {});
   await Notifications.cancelScheduledNotificationAsync(`lecture-${lecture.id}`).catch(() => {});
 
-  const id = await Notifications.scheduleNotificationAsync({
-    identifier: `lecture-${lecture.id}`,
-    content: {
-      title: `Upcoming: ${lecture.subject}`,
-      body: `${lecture.room} · ${lecture.teacher} · Starts at ${lecture.startTime}`,
-      sound: true,
-    },
-    trigger: {
-      type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-      weekday: dayNum === 0 ? 1 : dayNum + 1,
-      hour: notifyHour,
-      minute: notifyMinute,
-    },
-  });
-  return id;
+  const ids: string[] = [];
+
+  if (leadTime > 0) {
+    const trigger = getWeeklyTrigger(lecture.day, lecture.startTime, leadTime);
+    if (trigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        identifier: `lecture-${lecture.id}-remind`,
+        content: {
+          title: `Upcoming: ${lecture.subject}`,
+          body: `${lecture.room} · ${lecture.teacher} · Starts at ${lecture.startTime}`,
+          sound: true,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+          weekday: trigger.weekday,
+          hour: trigger.hour,
+          minute: trigger.minute,
+        },
+      });
+      ids.push(id);
+    }
+  }
+
+  if (mode === 'start' || mode === 'both') {
+    const trigger = getWeeklyTrigger(lecture.day, lecture.startTime, 0);
+    if (trigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        identifier: `lecture-${lecture.id}-start`,
+        content: {
+          title: `Lecture Started: ${lecture.subject}`,
+          body: `${lecture.room} · ${lecture.teacher}`,
+          sound: true,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+          weekday: trigger.weekday,
+          hour: trigger.hour,
+          minute: trigger.minute,
+        },
+      });
+      ids.push(id);
+    }
+  }
+
+  if (mode === 'end' || mode === 'both') {
+    const trigger = getWeeklyTrigger(lecture.day, lecture.endTime, 0);
+    if (trigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        identifier: `lecture-${lecture.id}-end`,
+        content: {
+          title: `Lecture Ended: ${lecture.subject}`,
+          body: `${lecture.room} · ${lecture.teacher}`,
+          sound: true,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+          weekday: trigger.weekday,
+          hour: trigger.hour,
+          minute: trigger.minute,
+        },
+      });
+      ids.push(id);
+    }
+  }
+
+  return ids.length > 0 ? ids : null;
 }
 
-async function cancelNotification(lectureId: number): Promise<void> {
+async function cancelLectureNotifications(lectureId: number): Promise<void> {
+  await Notifications.cancelScheduledNotificationAsync(`lecture-${lectureId}-remind`).catch(() => {});
+  await Notifications.cancelScheduledNotificationAsync(`lecture-${lectureId}-start`).catch(() => {});
+  await Notifications.cancelScheduledNotificationAsync(`lecture-${lectureId}-end`).catch(() => {});
   await Notifications.cancelScheduledNotificationAsync(`lecture-${lectureId}`).catch(() => {});
 }
 
@@ -102,6 +179,8 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
   const [reminderLeadTime, setReminderLeadTimeState] = useState(10);
+  const [lectureAlertMode, setLectureAlertModeState] = useState<AlertMode>('both');
+  const [routineAlertMode, setRoutineAlertModeState] = useState<AlertMode>('both');
 
   const refresh = useCallback(async () => {
     try {
@@ -116,9 +195,16 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     (async () => {
       setLoading(true);
       try {
-        const [all, leadStr] = await Promise.all([getAllLectures(), getSetting('reminderLeadTime')]);
+        const [all, leadStr, lectureModeStr, routineModeStr] = await Promise.all([
+          getAllLectures(),
+          getSetting('reminderLeadTime'),
+          getSetting('lectureAlertMode'),
+          getSetting('routineAlertMode'),
+        ]);
         setLectures(all);
         if (leadStr) setReminderLeadTimeState(parseInt(leadStr, 10));
+        setLectureAlertModeState(parseAlertMode(lectureModeStr));
+        setRoutineAlertModeState(parseAlertMode(routineModeStr));
       } catch (e) {
         console.error('Init error:', e);
       } finally {
@@ -131,11 +217,31 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     setReminderLeadTimeState(mins);
     await setSetting('reminderLeadTime', String(mins));
     const all = await getAllLectures();
-    for (const l of all) {
-      if (l.reminderEnabled) {
-        await scheduleNotification(l, mins);
+    for (const lecture of all) {
+      if (lecture.reminderEnabled) {
+        await scheduleLectureNotifications(lecture, lectureAlertMode, mins);
+      } else {
+        await cancelLectureNotifications(lecture.id);
       }
     }
+  }, [lectureAlertMode]);
+
+  const setLectureAlertMode = useCallback(async (mode: AlertMode) => {
+    setLectureAlertModeState(mode);
+    await setSetting('lectureAlertMode', mode);
+    const all = await getAllLectures();
+    for (const lecture of all) {
+      if (lecture.reminderEnabled) {
+        await scheduleLectureNotifications(lecture, mode, reminderLeadTime);
+      } else {
+        await cancelLectureNotifications(lecture.id);
+      }
+    }
+  }, [reminderLeadTime]);
+
+  const setRoutineAlertMode = useCallback(async (mode: AlertMode) => {
+    setRoutineAlertModeState(mode);
+    await setSetting('routineAlertMode', mode);
   }, []);
 
   const addLecture = useCallback(async (lecture: InsertLecture) => {
@@ -143,22 +249,22 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     await refresh();
     if (lecture.reminderEnabled) {
       const newLecture: Lecture = { ...lecture, id, reminderEnabled: 1 };
-      await scheduleNotification(newLecture, reminderLeadTime);
+      await scheduleLectureNotifications(newLecture, lectureAlertMode, reminderLeadTime);
     }
-  }, [refresh, reminderLeadTime]);
+  }, [refresh, lectureAlertMode, reminderLeadTime]);
 
   const editLecture = useCallback(async (lecture: Lecture) => {
     await updateLecture(lecture);
     await refresh();
     if (lecture.reminderEnabled) {
-      await scheduleNotification(lecture, reminderLeadTime);
+      await scheduleLectureNotifications(lecture, lectureAlertMode, reminderLeadTime);
     } else {
-      await cancelNotification(lecture.id);
+      await cancelLectureNotifications(lecture.id);
     }
-  }, [refresh, reminderLeadTime]);
+  }, [refresh, lectureAlertMode, reminderLeadTime]);
 
   const removeLecture = useCallback(async (id: number) => {
-    await cancelNotification(id);
+    await cancelLectureNotifications(id);
     await deleteLecture(id);
     setLectures(prev => prev.filter(l => l.id !== id));
   }, []);
@@ -170,11 +276,11 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     const lecture = all.find(l => l.id === id);
     if (!lecture) return;
     if (enabled) {
-      await scheduleNotification(lecture, reminderLeadTime);
+      await scheduleLectureNotifications(lecture, lectureAlertMode, reminderLeadTime);
     } else {
-      await cancelNotification(id);
+      await cancelLectureNotifications(id);
     }
-  }, [reminderLeadTime]);
+  }, [lectureAlertMode, reminderLeadTime]);
 
   const importLectures = useCallback(async (newLectures: InsertLecture[]) => {
     await insertLectures(newLectures);
@@ -183,7 +289,7 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
 
   const clearAllLectures = useCallback(async () => {
     for (const lecture of lectures) {
-      await cancelNotification(lecture.id);
+      await cancelLectureNotifications(lecture.id);
     }
     await deleteAllLectures();
     setLectures([]);
@@ -193,7 +299,11 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     lectures,
     loading,
     reminderLeadTime,
+    lectureAlertMode,
+    routineAlertMode,
     setReminderLeadTime,
+    setLectureAlertMode,
+    setRoutineAlertMode,
     addLecture,
     editLecture,
     removeLecture,
@@ -201,7 +311,7 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     importLectures,
     clearAllLectures,
     refresh,
-  }), [lectures, loading, reminderLeadTime, setReminderLeadTime, addLecture, editLecture, removeLecture, toggleLectureReminder, importLectures, clearAllLectures, refresh]);
+  }), [lectures, loading, reminderLeadTime, lectureAlertMode, routineAlertMode, setReminderLeadTime, setLectureAlertMode, setRoutineAlertMode, addLecture, editLecture, removeLecture, toggleLectureReminder, importLectures, clearAllLectures, refresh]);
 
   return (
     <ScheduleContext.Provider value={value}>

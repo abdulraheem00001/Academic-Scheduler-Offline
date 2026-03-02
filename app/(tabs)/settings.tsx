@@ -14,12 +14,27 @@ import * as Haptics from 'expo-haptics';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSchedule } from '@/context/ScheduleContext';
+import type { AlertMode } from '@/context/ScheduleContext';
 import Colors from '@/constants/colors';
 
 const LEAD_TIMES = [5, 10, 15, 20, 30];
 const ROUTINE_KEY = 'unischedule_daily_routine';
+const ALERT_MODE_OPTIONS: AlertMode[] = ['none', 'start', 'end', 'both'];
+
+const ALERT_MODE_LABEL: Record<AlertMode, string> = {
+  none: 'None',
+  start: 'Start',
+  end: 'End',
+  both: 'Both',
+};
 
 type StoredRoutine = {
+  title?: string;
+  day?: string;
+  startTime?: string;
+  endTime?: string;
+  notes?: string;
+  reminderEnabled?: number;
   reminderIds?: string[];
   reminderId?: string | null;
 };
@@ -30,10 +45,94 @@ function getRoutineNotificationIds(item: StoredRoutine): string[] {
   return [];
 }
 
+function timeToMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
+
+function getDayNumber(day: string): number {
+  const map: Record<string, number> = {
+    Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
+    Thursday: 4, Friday: 5, Saturday: 6,
+  };
+  return map[day] ?? -1;
+}
+
+function getWeeklyTrigger(day: string, time: string, offsetMins = 0): Notifications.CalendarTriggerInput | null {
+  const dayNum = getDayNumber(day);
+  if (dayNum < 0) return null;
+  let mins = timeToMinutes(time) - offsetMins;
+  let triggerDay = dayNum;
+  while (mins < 0) {
+    mins += 24 * 60;
+    triggerDay = (triggerDay + 6) % 7;
+  }
+  const hour = Math.floor(mins / 60);
+  const minute = mins % 60;
+  const weekday = triggerDay === 0 ? 1 : triggerDay + 1;
+  return { type: Notifications.SchedulableTriggerInputTypes.CALENDAR, weekday, hour, minute, repeats: true };
+}
+
+async function ensureNotificationPermission(): Promise<boolean> {
+  const perms = await Notifications.getPermissionsAsync();
+  if (perms.granted || perms.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) return true;
+  const req = await Notifications.requestPermissionsAsync();
+  return !!(req.granted || req.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL);
+}
+
+async function scheduleRoutineForMode(item: StoredRoutine, mode: AlertMode, leadMins: number): Promise<string[]> {
+  if (!item.day || !item.startTime || !item.endTime) return [];
+  const title = item.title ?? 'Routine';
+  const body = `${item.day} ${item.startTime} - ${item.endTime}${item.notes ? ` • ${item.notes}` : ''}`;
+  const ids: string[] = [];
+
+  if (leadMins > 0) {
+    const trigger = getWeeklyTrigger(item.day, item.startTime, Math.max(0, leadMins));
+    if (trigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: { title: `Upcoming routine: ${title}`, body, sound: 'default' },
+        trigger,
+      });
+      ids.push(id);
+    }
+  }
+
+  if (mode === 'start' || mode === 'both') {
+    const trigger = getWeeklyTrigger(item.day, item.startTime, 0);
+    if (trigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: { title: `Start now: ${title}`, body, sound: 'default' },
+        trigger,
+      });
+      ids.push(id);
+    }
+  }
+  if (mode === 'end' || mode === 'both') {
+    const trigger = getWeeklyTrigger(item.day, item.endTime);
+    if (trigger) {
+      const id = await Notifications.scheduleNotificationAsync({
+        content: { title: `Ended: ${title}`, body, sound: 'default' },
+        trigger,
+      });
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { reminderLeadTime, setReminderLeadTime, clearAllLectures } = useSchedule();
+  const {
+    reminderLeadTime,
+    setReminderLeadTime,
+    lectureAlertMode,
+    routineAlertMode,
+    setLectureAlertMode,
+    setRoutineAlertMode,
+    clearAllLectures,
+  } = useSchedule();
   const [saving, setSaving] = useState(false);
+  const [savingModes, setSavingModes] = useState(false);
   const [clearingLectures, setClearingLectures] = useState(false);
   const [clearingRoutine, setClearingRoutine] = useState(false);
 
@@ -46,6 +145,26 @@ export default function SettingsScreen() {
     setSaving(true);
     try {
       await setReminderLeadTime(mins);
+      const raw = await AsyncStorage.getItem(ROUTINE_KEY);
+      const routines: StoredRoutine[] = raw ? JSON.parse(raw) : [];
+      const hasPerms = routineAlertMode === 'none' ? true : await ensureNotificationPermission();
+      const updated: StoredRoutine[] = [];
+      for (const item of routines) {
+        const ids = getRoutineNotificationIds(item);
+        await Promise.all(ids.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+        if (!item.reminderEnabled || !hasPerms || routineAlertMode === 'none') {
+          updated.push({ ...item, reminderIds: [], reminderId: null });
+          continue;
+        }
+        const scheduled = await scheduleRoutineForMode(item, routineAlertMode, mins);
+        updated.push({
+          ...item,
+          reminderIds: scheduled,
+          reminderId: scheduled[0] ?? null,
+          reminderEnabled: scheduled.length > 0 ? 1 : 0,
+        });
+      }
+      await AsyncStorage.setItem(ROUTINE_KEY, JSON.stringify(updated));
     } finally {
       setSaving(false);
     }
@@ -101,6 +220,53 @@ export default function SettingsScreen() {
     );
   };
 
+  const handleLectureMode = async (mode: AlertMode) => {
+    if (mode === lectureAlertMode) return;
+    Haptics.selectionAsync();
+    setSavingModes(true);
+    try {
+      await setLectureAlertMode(mode);
+    } finally {
+      setSavingModes(false);
+    }
+  };
+
+  const handleRoutineMode = async (mode: AlertMode) => {
+    if (mode === routineAlertMode) return;
+    Haptics.selectionAsync();
+    setSavingModes(true);
+    try {
+      await setRoutineAlertMode(mode);
+
+      const raw = await AsyncStorage.getItem(ROUTINE_KEY);
+      const routines: StoredRoutine[] = raw ? JSON.parse(raw) : [];
+      const hasPerms = mode === 'none' ? true : await ensureNotificationPermission();
+      const updated: StoredRoutine[] = [];
+
+      for (const item of routines) {
+        const ids = getRoutineNotificationIds(item);
+        await Promise.all(ids.map(id => Notifications.cancelScheduledNotificationAsync(id).catch(() => {})));
+
+        if (!item.reminderEnabled || !hasPerms || mode === 'none') {
+          updated.push({ ...item, reminderIds: [], reminderId: null });
+          continue;
+        }
+
+        const scheduled = await scheduleRoutineForMode(item, mode, reminderLeadTime);
+        updated.push({
+          ...item,
+          reminderIds: scheduled,
+          reminderId: scheduled[0] ?? null,
+          reminderEnabled: scheduled.length > 0 ? 1 : 0,
+        });
+      }
+
+      await AsyncStorage.setItem(ROUTINE_KEY, JSON.stringify(updated));
+    } finally {
+      setSavingModes(false);
+    }
+  };
+
   return (
     <View style={[styles.container, { paddingTop: topPad }]}>
       <View style={styles.header}>
@@ -134,6 +300,50 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="school-outline" size={16} color={Colors.primary} />
+            <Text style={styles.sectionTitle}>Lecture Alerts</Text>
+          </View>
+          <Text style={styles.sectionDesc}>Choose when lecture notifications should be sent.</Text>
+          <View style={styles.pillRow}>
+            {ALERT_MODE_OPTIONS.map(mode => (
+              <TouchableOpacity
+                key={`lecture-${mode}`}
+                style={[styles.pill, lectureAlertMode === mode && styles.pillSelected]}
+                onPress={() => handleLectureMode(mode)}
+                disabled={savingModes}
+              >
+                <Text style={[styles.pillText, lectureAlertMode === mode && styles.pillTextSelected]}>
+                  {ALERT_MODE_LABEL[mode]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Ionicons name="list-outline" size={16} color={Colors.primary} />
+            <Text style={styles.sectionTitle}>Routine Alerts</Text>
+          </View>
+          <Text style={styles.sectionDesc}>Choose when routine notifications should be sent.</Text>
+          <View style={styles.pillRow}>
+            {ALERT_MODE_OPTIONS.map(mode => (
+              <TouchableOpacity
+                key={`routine-${mode}`}
+                style={[styles.pill, routineAlertMode === mode && styles.pillSelected]}
+                onPress={() => handleRoutineMode(mode)}
+                disabled={savingModes}
+              >
+                <Text style={[styles.pillText, routineAlertMode === mode && styles.pillTextSelected]}>
+                  {ALERT_MODE_LABEL[mode]}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
         <View style={styles.infoCard}>
           <Ionicons name="information-circle-outline" size={18} color={Colors.accent} />
           <Text style={styles.infoText}>
@@ -150,11 +360,11 @@ export default function SettingsScreen() {
           <View style={styles.aboutCard}>
             <View style={styles.aboutRow}>
               <Text style={styles.aboutLabel}>Version</Text>
-              <Text style={styles.aboutValue}>1.0.0</Text>
+              <Text style={styles.aboutValue}>3.0.0</Text>
             </View>
             <View style={[styles.aboutRow, { borderBottomWidth: 0 }]}>
               <Text style={styles.aboutLabel}>Storage</Text>
-              <Text style={styles.aboutValue}>Local SQLite (offline)</Text>
+              <Text style={styles.aboutValue}>Local</Text>
             </View>
           </View>
         </View>
@@ -190,6 +400,8 @@ export default function SettingsScreen() {
             </Text>
           </TouchableOpacity>
         </View>
+
+        <Text style={styles.footerText}>Developed by Abdul Raheem</Text>
       </ScrollView>
     </View>
   );
@@ -319,5 +531,12 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     fontSize: 13,
     color: Colors.danger,
+  },
+  footerText: {
+    textAlign: 'center',
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginTop: 8,
   },
 });

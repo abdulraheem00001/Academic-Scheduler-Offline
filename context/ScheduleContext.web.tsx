@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo } from 'react';
+﻿import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo } from 'react';
 import {
   Lecture,
   InsertLecture,
@@ -13,11 +13,23 @@ import {
   deleteAllLectures,
 } from '@/lib/database';
 
+const ALERT_MODES = ['none', 'start', 'end', 'both'] as const;
+export type AlertMode = typeof ALERT_MODES[number];
+
+function parseAlertMode(value: string | null): AlertMode {
+  if (value && ALERT_MODES.includes(value as AlertMode)) return value as AlertMode;
+  return 'both';
+}
+
 interface ScheduleContextValue {
   lectures: Lecture[];
   loading: boolean;
   reminderLeadTime: number;
+  lectureAlertMode: AlertMode;
+  routineAlertMode: AlertMode;
   setReminderLeadTime: (mins: number) => Promise<void>;
+  setLectureAlertMode: (mode: AlertMode) => Promise<void>;
+  setRoutineAlertMode: (mode: AlertMode) => Promise<void>;
   addLecture: (lecture: InsertLecture) => Promise<void>;
   editLecture: (lecture: Lecture) => Promise<void>;
   removeLecture: (id: number) => Promise<void>;
@@ -33,6 +45,8 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
   const [reminderLeadTime, setReminderLeadTimeState] = useState(10);
+  const [lectureAlertMode, setLectureAlertModeState] = useState<AlertMode>('both');
+  const [routineAlertMode, setRoutineAlertModeState] = useState<AlertMode>('both');
 
   const refresh = useCallback(async () => {
     try {
@@ -47,9 +61,16 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     (async () => {
       setLoading(true);
       try {
-        const [all, leadStr] = await Promise.all([getAllLectures(), getSetting('reminderLeadTime')]);
+        const [all, leadStr, lectureModeStr, routineModeStr] = await Promise.all([
+          getAllLectures(),
+          getSetting('reminderLeadTime'),
+          getSetting('lectureAlertMode'),
+          getSetting('routineAlertMode'),
+        ]);
         setLectures(all);
         if (leadStr) setReminderLeadTimeState(parseInt(leadStr, 10));
+        setLectureAlertModeState(parseAlertMode(lectureModeStr));
+        setRoutineAlertModeState(parseAlertMode(routineModeStr));
       } catch (e) {
         console.error('Init error:', e);
       } finally {
@@ -61,6 +82,16 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
   const setReminderLeadTime = useCallback(async (mins: number) => {
     setReminderLeadTimeState(mins);
     await setSetting('reminderLeadTime', String(mins));
+  }, []);
+
+  const setLectureAlertMode = useCallback(async (mode: AlertMode) => {
+    setLectureAlertModeState(mode);
+    await setSetting('lectureAlertMode', mode);
+  }, []);
+
+  const setRoutineAlertMode = useCallback(async (mode: AlertMode) => {
+    setRoutineAlertModeState(mode);
+    await setSetting('routineAlertMode', mode);
   }, []);
 
   const addLecture = useCallback(async (lecture: InsertLecture) => {
@@ -97,7 +128,11 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     lectures,
     loading,
     reminderLeadTime,
+    lectureAlertMode,
+    routineAlertMode,
     setReminderLeadTime,
+    setLectureAlertMode,
+    setRoutineAlertMode,
     addLecture,
     editLecture,
     removeLecture,
@@ -105,7 +140,7 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     importLectures,
     clearAllLectures,
     refresh,
-  }), [lectures, loading, reminderLeadTime, setReminderLeadTime, addLecture, editLecture, removeLecture, toggleLectureReminder, importLectures, clearAllLectures, refresh]);
+  }), [lectures, loading, reminderLeadTime, lectureAlertMode, routineAlertMode, setReminderLeadTime, setLectureAlertMode, setRoutineAlertMode, addLecture, editLecture, removeLecture, toggleLectureReminder, importLectures, clearAllLectures, refresh]);
 
   return (
     <ScheduleContext.Provider value={value}>
@@ -121,3 +156,4 @@ export function useSchedule() {
 }
 
 export { };
+
