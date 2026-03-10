@@ -54,7 +54,29 @@ workflows:
           fi
 
           SCHEMES=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{gsub(/^ +| +$/,""); if(length($0)>0){print}}')
-          SCHEME=$(echo "$SCHEMES" | grep -E -v '^Pods' | head -n 1)
+          echo "Available schemes:"
+          echo "$SCHEMES"
+
+          APP_NAME=$(node -e "console.log(require('./app.json').expo.name)" 2>/dev/null || true)
+          WORKSPACE_NAME=$(basename "$WORKSPACE" .xcworkspace)
+
+          pick_scheme() {
+            echo "$SCHEMES" | grep -E "^$1$" || true
+          }
+
+          SCHEME=""
+          if [[ -n "${IOS_SCHEME:-}" ]]; then
+            SCHEME=$(pick_scheme "$IOS_SCHEME")
+          fi
+          if [[ -z "$SCHEME" && -n "$APP_NAME" ]]; then
+            SCHEME=$(pick_scheme "$APP_NAME")
+          fi
+          if [[ -z "$SCHEME" ]]; then
+            SCHEME=$(pick_scheme "$WORKSPACE_NAME")
+          fi
+          if [[ -z "$SCHEME" ]]; then
+            SCHEME=$(echo "$SCHEMES" | grep -Ev '^(Pods|EXApplication|ExpoModulesProvider)' | head -n 1)
+          fi
           if [[ -z "$SCHEME" ]]; then
             SCHEME=$(echo "$SCHEMES" | head -n 1)
           fi
@@ -80,6 +102,8 @@ workflows:
           APP_DIR=$(find build/ios/export.xcarchive -name "*.app" | head -n 1)
           if [[ -z "$APP_DIR" ]]; then
             echo "ERROR: Archive missing .app; check xcodebuild output above."
+            echo "Archive contents:"
+            find build/ios/export.xcarchive -maxdepth 4 -type d -print
             exit 1
           fi
           cp ios/main.jsbundle "$APP_DIR/main.jsbundle"
