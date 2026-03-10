@@ -10,28 +10,38 @@ workflows:
         script: npx expo prebuild --platform ios
       - name: Bundle and Force Inject
         script: |
-          # 1. Generate the JavaScript bundle for Release
+          # 1. Generate JavaScript bundle for iOS release
           npx expo export:embed \
             --platform ios \
             --dev false \
             --entry-file node_modules/expo-router/entry.js \
             --bundle-output ios/main.jsbundle \
             --assets-dest ios
-          
-          # 2. Build the app shell in RELEASE mode (This removes the 'Connect to Metro' screen)
+
+          # Detect workspace and scheme
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{gsub(/^ +| +$/,""); if(length($0)>0){print; exit}}')
+          echo "Using workspace: $WORKSPACE"
+          echo "Using scheme: $SCHEME"
+
+          # 2. Archive release app shell (unsigned)
           xcodebuild archive \
-            -workspace ios/*.xcworkspace \
-            -scheme UniSchedule \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -archivePath build/ios/export.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_ENTITLEMENTS="" \
             CODE_SIGNING_METHOD=manual
-          
-          # 3. Inject the bundle into the Release package
-          APP_DIR=$(find build/ios/export.xcarchive -name "*.app")
+
+          # 3. Inject JS bundle into archived .app
+          APP_DIR=$(find build/ios/export.xcarchive -name "*.app" | head -n 1)
           cp ios/main.jsbundle "$APP_DIR/main.jsbundle"
-          echo "✅ SUCCESS: Release bundle injected into: $APP_DIR"
+          echo "SUCCESS: Release bundle injected into: $APP_DIR"
+
+          # 4. Zip archive so Codemagic always picks up a file artifact
+          ditto -c -k --sequesterRsrc --keepParent build/ios/export.xcarchive build/ios/export.xcarchive.zip
     artifacts:
-      - build/ios/export.xcarchive
+      - build/ios/export.xcarchive.zip
+      - build/ios/export.xcarchive/**
