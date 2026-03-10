@@ -8,6 +8,20 @@ workflows:
         script: npm install
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios
+      - name: Patch Podfile for modular headers
+        script: |
+          set -euo pipefail
+          PODFILE=ios/Podfile
+          if [[ ! -f "$PODFILE" ]]; then
+            echo "Podfile missing; was expo prebuild skipped?"
+            exit 1
+          fi
+          if ! grep -q "use_modular_headers!" "$PODFILE"; then
+            perl -0777 -i -pe 's/^platform :ios,.*$/use_modular_headers!\\n$&/m' "$PODFILE"
+            echo "Inserted use_modular_headers! to allow Swift pods with module maps."
+          else
+            echo "Podfile already opts into modular headers."
+          fi
       - name: Install pods
         script: |
           cd ios
