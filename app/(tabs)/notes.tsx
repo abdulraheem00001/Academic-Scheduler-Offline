@@ -124,6 +124,10 @@ function toTimeInput(d: Date): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function toTimeInput12h(d: Date): string {
+  return formatHourMinute12h(d.getHours(), d.getMinutes());
+}
+
 function parseDateInput(value: string): { year: number; month: number; day: number } | null {
   const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
@@ -134,22 +138,55 @@ function parseDateInput(value: string): { year: number; month: number; day: numb
   return { year, month, day };
 }
 
-function parseTimeInput(value: string): { hour: number; minute: number } | null {
-  const m = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!m) return null;
-  const hour = parseInt(m[1], 10);
-  const minute = parseInt(m[2], 10);
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-  return { hour, minute };
+function formatHourMinute12h(hour24: number, minute: number): string {
+  let hour = hour24 % 24;
+  const meridiem: 'AM' | 'PM' = hour >= 12 ? 'PM' : 'AM';
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${meridiem}`;
 }
 
-function composeDateTime(dateStr: string, timeStr: string): Date | null {
-  const date = parseDateInput(dateStr);
-  const time = parseTimeInput(timeStr);
-  if (!date || !time) return null;
-  const dt = new Date(date.year, date.month - 1, date.day, time.hour, time.minute, 0, 0);
-  if (Number.isNaN(dt.getTime())) return null;
-  return dt;
+function parseTimeInput(
+  value: string,
+  mode: '24h' | 'ampm',
+  fallbackMeridiem: 'AM' | 'PM'
+): { hour: number; minute: number } | null {
+  const raw = value.trim();
+  if (!raw) return null;
+
+  // 24-hour format HH:MM
+  const m24 = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (m24) {
+    const hour = parseInt(m24[1], 10);
+    const minute = parseInt(m24[2], 10);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      if (mode === '24h') return { hour, minute };
+      // in ampm mode with no suffix, use selected meridiem
+      let h = hour;
+      if (h >= 13) {
+        // allow user to type 13:00 etc: treat as 24h still
+        return { hour: h, minute };
+      }
+      if (fallbackMeridiem === 'PM' && h !== 12) h += 12;
+      if (fallbackMeridiem === 'AM' && h === 12) h = 0;
+      return { hour: h, minute };
+    }
+  }
+
+  // 12-hour format HH:MM AM/PM
+  const m12 = raw.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (m12) {
+    let hour = parseInt(m12[1], 10);
+    const minute = parseInt(m12[2], 10);
+    const meridiem = m12[3].toUpperCase() as 'AM' | 'PM';
+    if (hour >= 1 && hour <= 12 && minute >= 0 && minute <= 59) {
+      if (meridiem === 'PM' && hour !== 12) hour += 12;
+      if (meridiem === 'AM' && hour === 12) hour = 0;
+      return { hour, minute };
+    }
+  }
+
+  return null;
 }
 
 export default function NotesScreen() {
@@ -166,6 +203,8 @@ export default function NotesScreen() {
   const [details, setDetails] = useState('');
   const [dateInput, setDateInput] = useState('');
   const [timeInput, setTimeInput] = useState('');
+  const [timeFormat, setTimeFormat] = useState<'24h' | 'ampm'>('24h');
+  const [timeMeridiem, setTimeMeridiem] = useState<'AM' | 'PM'>('AM');
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const sheetTranslateY = useRef(new Animated.Value(windowHeight)).current;
 
@@ -214,6 +253,8 @@ export default function NotesScreen() {
     setDetails('');
     setDateInput('');
     setTimeInput('');
+    setTimeFormat('24h');
+    setTimeMeridiem('AM');
     setReminderEnabled(true);
   }, []);
 
@@ -229,14 +270,16 @@ export default function NotesScreen() {
     if (note.dateAt) {
       const dt = new Date(note.dateAt);
       setDateInput(toDateInput(dt));
-      setTimeInput(toTimeInput(dt));
+      setTimeMeridiem(dt.getHours() >= 12 ? 'PM' : 'AM');
+      setTimeInput(timeFormat === 'ampm' ? toTimeInput12h(dt) : toTimeInput(dt));
     } else {
       setDateInput('');
       setTimeInput('');
+      setTimeMeridiem('AM');
     }
     setReminderEnabled(!!note.reminderEnabled);
     setComposerOpen(true);
-  }, []);
+  }, [timeFormat]);
 
   const closeComposer = useCallback(() => {
     Keyboard.dismiss();
@@ -317,7 +360,11 @@ export default function NotesScreen() {
     const timeTrimmed = timeInput.trim();
     const hasDate = dateTrimmed.length > 0;
     const hasTime = timeTrimmed.length > 0;
-    const eventDt = hasDate && hasTime ? composeDateTime(dateTrimmed, timeTrimmed) : null;
+    const dateParsed = hasDate ? parseDateInput(dateTrimmed) : null;
+    const timeParsed = hasTime ? parseTimeInput(timeTrimmed, timeFormat, timeMeridiem) : null;
+    const eventDt = dateParsed && timeParsed
+      ? new Date(dateParsed.year, dateParsed.month - 1, dateParsed.day, timeParsed.hour, timeParsed.minute, 0, 0)
+      : null;
 
     if (!trimmedTitle) {
       Alert.alert('Title required', 'Please enter an event title.');
@@ -328,7 +375,7 @@ export default function NotesScreen() {
       return;
     }
     if (hasDate && hasTime && !eventDt) {
-      Alert.alert('Invalid Date/Time', 'Use Date as YYYY-MM-DD and Time as HH:MM (24-hour).');
+      Alert.alert('Invalid Date/Time', 'Use Date as YYYY-MM-DD and Time as HH:MM (24-hour) or HH:MM with AM/PM.');
       return;
     }
 
@@ -533,17 +580,67 @@ export default function NotesScreen() {
                 </View>
 
                 <View style={styles.fieldWrap}>
-                  <Text style={styles.fieldLabel}>Time</Text>
+                  <View style={styles.modeRow}>
+                    <Text style={styles.modeLabel}>Time</Text>
+                    <View style={styles.modeSwitch}>
+                      <TouchableOpacity
+                        style={[styles.modeChip, timeFormat === '24h' && styles.modeChipActive]}
+                        onPress={() => setTimeFormat('24h')}
+                      >
+                        <Text style={[styles.modeChipText, timeFormat === '24h' && styles.modeChipTextActive]}>24H</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.modeChip, timeFormat === 'ampm' && styles.modeChipActive]}
+                        onPress={() => setTimeFormat('ampm')}
+                      >
+                        <Text style={[styles.modeChipText, timeFormat === 'ampm' && styles.modeChipTextActive]}>AM/PM</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
                   <TextInput
                     style={styles.input}
                     value={timeInput}
                     onChangeText={setTimeInput}
-                    placeholder="HH:MM"
+                    placeholder={timeFormat === 'ampm' ? 'HH:MM AM/PM' : 'HH:MM'}
                     placeholderTextColor={Colors.textMuted}
                     keyboardType="numbers-and-punctuation"
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
+
+                  {timeFormat === 'ampm' && (
+                    <View style={styles.timePresetRow}>
+                      <TouchableOpacity
+                        style={[styles.pillBtn, timeMeridiem === 'AM' && styles.togglePillSelected]}
+                        onPress={() => {
+                          setTimeMeridiem('AM');
+                          const parsed = parseTimeInput(timeInput, 'ampm', 'AM');
+                          if (parsed) {
+                            setTimeInput(formatHourMinute12h(parsed.hour % 12, parsed.minute).replace(/AM|PM/, 'AM'));
+                          } else {
+                            setTimeInput('08:00 AM');
+                          }
+                        }}
+                      >
+                        <Text style={[styles.pillBtnText, timeMeridiem === 'AM' && styles.togglePillTextSelected]}>AM</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.pillBtn, timeMeridiem === 'PM' && styles.togglePillSelected]}
+                        onPress={() => {
+                          setTimeMeridiem('PM');
+                          const parsed = parseTimeInput(timeInput, 'ampm', 'PM');
+                          if (parsed) {
+                            setTimeInput(formatHourMinute12h(parsed.hour % 12, parsed.minute).replace(/AM|PM/, 'PM'));
+                          } else {
+                            setTimeInput('08:00 PM');
+                          }
+                        }}
+                      >
+                        <Text style={[styles.pillBtnText, timeMeridiem === 'PM' && styles.togglePillTextSelected]}>PM</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
 
                 <View style={styles.formReminderRow}>
@@ -808,12 +905,91 @@ const styles = StyleSheet.create({
   fieldWrap: {
     gap: 6,
   },
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  modeLabel: {
+    color: Colors.textSecondary,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+  },
+  modeSwitch: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  modeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface2,
+  },
+  modeChipActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  modeChipText: {
+    color: Colors.text,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+  },
+  modeChipTextActive: {
+    color: Colors.bg,
+  },
+  timePresetRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  pillBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface2,
+  },
+  pillBtnText: {
+    color: Colors.text,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
   fieldLabel: {
     color: Colors.textSecondary,
     fontFamily: 'Inter_500Medium',
     fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.7,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  togglePill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface2,
+  },
+  togglePillSelected: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  togglePillText: {
+    color: Colors.text,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+  },
+  togglePillTextSelected: {
+    color: Colors.bg,
   },
   formReminderRow: {
     flexDirection: 'row',

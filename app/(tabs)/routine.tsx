@@ -98,6 +98,16 @@ function toMeridiem(hhmm: string): Meridiem {
   return hh >= 12 ? 'PM' : 'AM';
 }
 
+function to12hDisplay(hhmm: string): { text: string; meridiem: Meridiem } {
+  const [hStr, mStr] = hhmm.split(':');
+  const h = parseInt(hStr ?? '0', 10);
+  const m = parseInt(mStr ?? '0', 10);
+  if (Number.isNaN(h) || Number.isNaN(m)) return { text: '', meridiem: 'AM' };
+  const meridiem: Meridiem = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return { text: `${h12}:${String(m).padStart(2, '0')}`, meridiem };
+}
+
 function parseTimeInput(value: string, is24Hour: boolean, meridiem: Meridiem): string {
   const raw = value.trim();
   if (!raw) return '';
@@ -1060,13 +1070,47 @@ export default function RoutineScreen() {
                     <View style={styles.modeSwitch}>
                       <TouchableOpacity
                         style={[styles.modeChip, is24Hour && styles.modeChipActive]}
-                        onPress={() => setIs24Hour(true)}
+                        onPress={() => {
+                          if (is24Hour) return;
+                          const parsedStart = parseTimeInput(startTime, false, startMeridiem);
+                          const parsedEnd = parseTimeInput(endTime, false, endMeridiem);
+                          if (parsedStart) {
+                            setStartTime(parsedStart);
+                            setStartMeridiem(toMeridiem(parsedStart));
+                          }
+                          if (parsedEnd) {
+                            setEndTime(parsedEnd);
+                            setEndMeridiem(toMeridiem(parsedEnd));
+                          }
+                          setIs24Hour(true);
+                        }}
                       >
                         <Text style={[styles.modeChipText, is24Hour && styles.modeChipTextActive]}>24H</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.modeChip, !is24Hour && styles.modeChipActive]}
-                        onPress={() => setIs24Hour(false)}
+                        onPress={() => {
+                          if (!is24Hour) return;
+                          const parsedStart = parseTimeInput(startTime, true, startMeridiem);
+                          const parsedEnd = parseTimeInput(endTime, true, endMeridiem);
+                          if (parsedStart) {
+                            const { text, meridiem } = to12hDisplay(parsedStart);
+                            setStartTime(text);
+                            setStartMeridiem(meridiem);
+                          } else {
+                            setStartTime('');
+                            setStartMeridiem('AM');
+                          }
+                          if (parsedEnd) {
+                            const { text, meridiem } = to12hDisplay(parsedEnd);
+                            setEndTime(text);
+                            setEndMeridiem(meridiem);
+                          } else {
+                            setEndTime('');
+                            setEndMeridiem('AM');
+                          }
+                          setIs24Hour(false);
+                        }}
                       >
                         <Text style={[styles.modeChipText, !is24Hour && styles.modeChipTextActive]}>AM/PM</Text>
                       </TouchableOpacity>
