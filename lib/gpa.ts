@@ -37,6 +37,7 @@ export type SubjectPointsResult = {
 
 export type GpaResult = {
   gpa: number | null;
+  percentage: number | null;
   totalCredits: number;
   qualityPoints: number;
   validSubjects: number;
@@ -123,6 +124,38 @@ export function gradeOrMarksToPointsWithCriteria(
   return matched ? matched.gpa : null;
 }
 
+export function gradeOrMarksToPercentageWithCriteria(
+  input: string,
+  criteria: GpaCriteriaRange[] | null | undefined
+): number | null {
+  const raw = input.trim().toUpperCase();
+  if (!raw) return null;
+
+  const n = toNumber(raw);
+  if (n != null) {
+    if (n >= 0 && n <= 100) return n;
+    if (n >= 0 && n <= 4) {
+      const normalized = normalizeCriteria(criteria);
+      const match = normalized.find(range => range.gpa === n);
+      const nearest =
+        match ||
+        normalized.reduce((best, range) => {
+          return Math.abs(range.gpa - n) < Math.abs(best.gpa - n) ? range : best;
+        }, normalized[0]);
+      return nearest ? (nearest.minPercentage + nearest.maxPercentage) / 2 : null;
+    }
+  }
+
+  const letterPoints = LETTER_TO_POINTS[raw];
+  if (letterPoints != null) {
+    const normalized = normalizeCriteria(criteria);
+    const match = normalized.find(range => range.gpa === letterPoints);
+    if (match) return (match.minPercentage + match.maxPercentage) / 2;
+  }
+
+  return null;
+}
+
 export function calculateSubjectPoints(
   subject: GpaSubject,
   criteria: GpaCriteriaRange[] | null | undefined
@@ -141,6 +174,8 @@ export function calculateSemesterGpa(
 ): GpaResult {
   let qualityPoints = 0;
   let totalCredits = 0;
+  let percentagePoints = 0;
+  let percentageCredits = 0;
   let validSubjects = 0;
   let invalidSubjects = 0;
 
@@ -153,10 +188,17 @@ export function calculateSemesterGpa(
     validSubjects += 1;
     qualityPoints += r.qualityPoints;
     totalCredits += r.creditHours;
+
+    const pct = gradeOrMarksToPercentageWithCriteria(subject.gradeOrMarks, criteria);
+    if (pct != null && r.creditHours > 0) {
+      percentagePoints += pct * r.creditHours;
+      percentageCredits += r.creditHours;
+    }
   }
 
   return {
     gpa: totalCredits > 0 ? qualityPoints / totalCredits : null,
+    percentage: percentageCredits > 0 ? percentagePoints / percentageCredits : null,
     totalCredits,
     qualityPoints,
     validSubjects,

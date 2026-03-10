@@ -457,8 +457,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    flex: 1,
-    alignItems: 'center',
   },
   pillSelected: {
     backgroundColor: Colors.primary,

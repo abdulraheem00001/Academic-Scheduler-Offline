@@ -19,6 +19,7 @@ import {
   calculateSubjectPoints,
   GpaSemester,
   gradeOrMarksToPointsWithCriteria,
+  gradeOrMarksToPercentageWithCriteria,
   loadGpaState,
   saveGpaState,
 } from '@/lib/gpa';
@@ -26,6 +27,11 @@ import {
 function formatPoint(value: number | null): string {
   if (value == null || Number.isNaN(value)) return '--';
   return value.toFixed(2);
+}
+
+function formatPercent(value: number | null): string {
+  if (value == null || Number.isNaN(value)) return '--';
+  return `${value.toFixed(1)}%`;
 }
 
 export default function SemesterDetailsScreen() {
@@ -176,7 +182,9 @@ export default function SemesterDetailsScreen() {
               <Text style={styles.secondaryBtnText}>Save</Text>
             </TouchableOpacity>
           </View>
-          <Text style={styles.meta}>Semester GPA: {formatPoint(result?.gpa ?? null)}</Text>
+          <Text style={styles.meta}>
+            Semester GPA: {formatPoint(result?.gpa ?? null)} | Avg %: {formatPercent(result?.percentage ?? null)}
+          </Text>
         </View>
 
         <View style={styles.card}>
@@ -186,12 +194,13 @@ export default function SemesterDetailsScreen() {
           ) : (
             semester.subjects.map(sub => {
               const subCalc = calculateSubjectPoints(sub, gradingCriteria);
+              const subPct = gradeOrMarksToPercentageWithCriteria(sub.gradeOrMarks, gradingCriteria);
               return (
                 <View key={sub.id} style={styles.subjectRow}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.subjectName}>{sub.name}</Text>
                     <Text style={styles.subjectMeta}>
-                      {sub.gradeOrMarks} · {sub.creditHours} CH · GP {formatPoint(subCalc.points)}
+                      {sub.gradeOrMarks} | {sub.creditHours} CH | GP {formatPoint(subCalc.points)} | {formatPercent(subPct)}
                     </Text>
                   </View>
                   <TouchableOpacity onPress={() => { void removeSubject(sub.id); }}>

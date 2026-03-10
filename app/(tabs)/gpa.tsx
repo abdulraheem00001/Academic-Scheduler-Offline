@@ -42,6 +42,11 @@ function formatPoint(value: number | null): string {
   return value.toFixed(2);
 }
 
+function formatPercent(value: number | null): string {
+  if (value == null || Number.isNaN(value)) return '--';
+  return `${value.toFixed(1)}%`;
+}
+
 function createSubjectDraft(): SubjectDraft {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -314,7 +319,7 @@ export default function GpaScreen() {
     <View style={[styles.container, { paddingTop: topPad }]}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.title}>GPA / CGPA Calculator</Text>
+          <Text style={styles.title}>GPA Calculator</Text>
           <Text style={styles.subtitle}>Track semester GPA and overall CGPA</Text>
         </View>
         <View style={styles.headerActions}>
@@ -386,11 +391,19 @@ export default function GpaScreen() {
                 >
                   <View>
                     <Text style={styles.semTitle}>{item.name || `Semester ${index + 1}`}</Text>
-                    <Text style={styles.semMeta}>{item.subjects.length} subjects</Text>
+                    <Text style={styles.semMeta}>
+                      {item.subjects.length} subjects
+                    </Text>
                   </View>
                   <View style={styles.semRight}>
-                    <Text style={styles.semGpaLabel}>Semester GPA</Text>
-                    <Text style={styles.semGpaValue}>{formatPoint(result.gpa)}</Text>
+                    <View>
+                      <Text style={styles.semGpaLabel}>GPA</Text>
+                      <Text style={styles.semGpaValue}>{formatPoint(result.gpa)}</Text>
+                    </View>
+                    <View>
+                      <Text style={styles.semGpaLabel}>Average %</Text>
+                      <Text style={styles.semGpaValue}>{formatPercent(result.percentage)}</Text>
+                    </View>
                   </View>
                 </TouchableOpacity>
                 <View style={styles.semActions}>
@@ -635,7 +648,11 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   semRight: {
-    alignItems: 'flex-end',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 18,
   },
   semGpaLabel: {
     color: Colors.textMuted,

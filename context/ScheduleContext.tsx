@@ -85,10 +85,14 @@ function getWeeklyTrigger(day: string, time: string, offsetMins = 0): { weekday:
 
 async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
-  const { status: existing } = await Notifications.getPermissionsAsync();
-  if (existing === 'granted') return true;
-  const { status } = await Notifications.requestPermissionsAsync();
-  return status === 'granted';
+
+  const existing = await Notifications.getPermissionsAsync();
+  if (existing.granted || existing.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) {
+    return true;
+  }
+
+  const requested = await Notifications.requestPermissionsAsync();
+  return requested.granted || requested.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
 }
 
 async function scheduleLectureNotifications(lecture: Lecture, mode: AlertMode, leadTime: number): Promise<string[] | null> {
