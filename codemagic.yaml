@@ -53,7 +53,11 @@ workflows:
             exit 1
           fi
 
-          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{gsub(/^ +| +$/,""); if(length($0)>0){print; exit}}')
+          SCHEMES=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{gsub(/^ +| +$/,""); if(length($0)>0){print}}')
+          SCHEME=$(echo "$SCHEMES" | grep -E -v '^Pods' | head -n 1)
+          if [[ -z "$SCHEME" ]]; then
+            SCHEME=$(echo "$SCHEMES" | head -n 1)
+          fi
           if [[ -z "$SCHEME" ]]; then
             echo "ERROR: Could not detect a scheme in $WORKSPACE"
             exit 1
