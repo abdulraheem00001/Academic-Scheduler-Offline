@@ -42,6 +42,43 @@ workflows:
 
           # 4. Zip archive so Codemagic always picks up a file artifact
           ditto -c -k --sequesterRsrc --keepParent build/ios/export.xcarchive build/ios/export.xcarchive.zip
+      - name: Export IPA (signed if EXPORT_OPTIONS_PLIST is provided, always emits unsigned)
+        script: |
+          set -euo pipefail
+
+          ARCHIVE_PATH="build/ios/export.xcarchive"
+          APP_DIR=$(find "$ARCHIVE_PATH" -name "*.app" | head -n 1)
+          IPA_ROOT="build/ios"
+
+          echo "App bundle: $APP_DIR"
+
+          # Optional signed export when an export options plist is provided (e.g. AdHoc/AppStore)
+          if [[ -n "${EXPORT_OPTIONS_PLIST:-}" ]]; then
+            echo "Attempting signed export using: $EXPORT_OPTIONS_PLIST"
+            xcodebuild -exportArchive \
+              -archivePath "$ARCHIVE_PATH" \
+              -exportPath "$IPA_ROOT/export-signed" \
+              -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
+
+            SIGNED_IPA=$(find "$IPA_ROOT/export-signed" -name "*.ipa" | head -n 1 || true)
+            if [[ -n "$SIGNED_IPA" ]]; then
+              mv "$SIGNED_IPA" "$IPA_ROOT/app-signed.ipa"
+              echo "Signed IPA: $IPA_ROOT/app-signed.ipa"
+            else
+              echo "Signed export did not produce an IPA; continuing with unsigned packaging."
+            fi
+          else
+            echo "EXPORT_OPTIONS_PLIST not set; skipping signed export."
+          fi
+
+          # Always build an unsigned IPA by packaging the .app payload
+          UNSIGNED_DIR="$IPA_ROOT/unsigned"
+          mkdir -p "$UNSIGNED_DIR/Payload"
+          cp -R "$APP_DIR" "$UNSIGNED_DIR/Payload/"
+          (cd "$UNSIGNED_DIR" && zip -r ../app-unsigned.ipa Payload)
+          echo "Unsigned IPA: $IPA_ROOT/app-unsigned.ipa"
     artifacts:
       - build/ios/export.xcarchive.zip
       - build/ios/export.xcarchive/**
+      - build/ios/app-unsigned.ipa
+      - build/ios/app-signed.ipa
