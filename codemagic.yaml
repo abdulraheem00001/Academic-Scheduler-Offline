@@ -8,8 +8,14 @@ workflows:
         script: npm install
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios
+      - name: Install pods
+        script: |
+          cd ios
+          pod install --repo-update
       - name: Bundle and Force Inject
         script: |
+          set -euo pipefail
+
           # 1. Generate JavaScript bundle for iOS release
           npx expo export:embed \
             --platform ios \
@@ -20,7 +26,21 @@ workflows:
 
           # Detect workspace and scheme
           WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          if [[ -z "$WORKSPACE" ]]; then
+            echo "No .xcworkspace found after prebuild; attempting pod install"
+            (cd ios && pod install)
+            WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          fi
+          if [[ -z "$WORKSPACE" ]]; then
+            echo "ERROR: No .xcworkspace found; cannot continue."
+            exit 1
+          fi
+
           SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1;next}/^$/{flag=0}flag{gsub(/^ +| +$/,""); if(length($0)>0){print; exit}}')
+          if [[ -z "$SCHEME" ]]; then
+            echo "ERROR: Could not detect a scheme in $WORKSPACE"
+            exit 1
+          fi
           echo "Using workspace: $WORKSPACE"
           echo "Using scheme: $SCHEME"
 
@@ -37,6 +57,10 @@ workflows:
 
           # 3. Inject JS bundle into archived .app
           APP_DIR=$(find build/ios/export.xcarchive -name "*.app" | head -n 1)
+          if [[ -z "$APP_DIR" ]]; then
+            echo "ERROR: Archive missing .app; check xcodebuild output above."
+            exit 1
+          fi
           cp ios/main.jsbundle "$APP_DIR/main.jsbundle"
           echo "SUCCESS: Release bundle injected into: $APP_DIR"
 
