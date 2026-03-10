@@ -191,6 +191,24 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const resyncLectureNotifications = useCallback(async (
+    allLectures: Lecture[],
+    mode: AlertMode,
+    leadTime: number
+  ) => {
+    for (const lecture of allLectures) {
+      try {
+        if (lecture.reminderEnabled) {
+          await scheduleLectureNotifications(lecture, mode, leadTime);
+        } else {
+          await cancelLectureNotifications(lecture.id);
+        }
+      } catch (e) {
+        console.error(`Failed to sync notifications for lecture ${lecture.id}:`, e);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -217,27 +235,15 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     setReminderLeadTimeState(mins);
     await setSetting('reminderLeadTime', String(mins));
     const all = await getAllLectures();
-    for (const lecture of all) {
-      if (lecture.reminderEnabled) {
-        await scheduleLectureNotifications(lecture, lectureAlertMode, mins);
-      } else {
-        await cancelLectureNotifications(lecture.id);
-      }
-    }
-  }, [lectureAlertMode]);
+    await resyncLectureNotifications(all, lectureAlertMode, mins);
+  }, [lectureAlertMode, resyncLectureNotifications]);
 
   const setLectureAlertMode = useCallback(async (mode: AlertMode) => {
     setLectureAlertModeState(mode);
     await setSetting('lectureAlertMode', mode);
     const all = await getAllLectures();
-    for (const lecture of all) {
-      if (lecture.reminderEnabled) {
-        await scheduleLectureNotifications(lecture, mode, reminderLeadTime);
-      } else {
-        await cancelLectureNotifications(lecture.id);
-      }
-    }
-  }, [reminderLeadTime]);
+    await resyncLectureNotifications(all, mode, reminderLeadTime);
+  }, [reminderLeadTime, resyncLectureNotifications]);
 
   const setRoutineAlertMode = useCallback(async (mode: AlertMode) => {
     setRoutineAlertModeState(mode);
@@ -249,17 +255,25 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     await refresh();
     if (lecture.reminderEnabled) {
       const newLecture: Lecture = { ...lecture, id, reminderEnabled: 1 };
-      await scheduleLectureNotifications(newLecture, lectureAlertMode, reminderLeadTime);
+      try {
+        await scheduleLectureNotifications(newLecture, lectureAlertMode, reminderLeadTime);
+      } catch (e) {
+        console.error(`Failed to schedule notifications for lecture ${id}:`, e);
+      }
     }
   }, [refresh, lectureAlertMode, reminderLeadTime]);
 
   const editLecture = useCallback(async (lecture: Lecture) => {
     await updateLecture(lecture);
     await refresh();
-    if (lecture.reminderEnabled) {
-      await scheduleLectureNotifications(lecture, lectureAlertMode, reminderLeadTime);
-    } else {
-      await cancelLectureNotifications(lecture.id);
+    try {
+      if (lecture.reminderEnabled) {
+        await scheduleLectureNotifications(lecture, lectureAlertMode, reminderLeadTime);
+      } else {
+        await cancelLectureNotifications(lecture.id);
+      }
+    } catch (e) {
+      console.error(`Failed to update notifications for lecture ${lecture.id}:`, e);
     }
   }, [refresh, lectureAlertMode, reminderLeadTime]);
 
@@ -275,17 +289,23 @@ export function ScheduleProvider({ children }: { children: ReactNode }) {
     const all = await getAllLectures();
     const lecture = all.find(l => l.id === id);
     if (!lecture) return;
-    if (enabled) {
-      await scheduleLectureNotifications(lecture, lectureAlertMode, reminderLeadTime);
-    } else {
-      await cancelLectureNotifications(id);
+    try {
+      if (enabled) {
+        await scheduleLectureNotifications(lecture, lectureAlertMode, reminderLeadTime);
+      } else {
+        await cancelLectureNotifications(id);
+      }
+    } catch (e) {
+      console.error(`Failed to toggle notifications for lecture ${id}:`, e);
     }
   }, [lectureAlertMode, reminderLeadTime]);
 
   const importLectures = useCallback(async (newLectures: InsertLecture[]) => {
     await insertLectures(newLectures);
-    await refresh();
-  }, [refresh]);
+    const all = await getAllLectures();
+    setLectures(all);
+    await resyncLectureNotifications(all, lectureAlertMode, reminderLeadTime);
+  }, [lectureAlertMode, reminderLeadTime, resyncLectureNotifications]);
 
   const clearAllLectures = useCallback(async () => {
     for (const lecture of lectures) {

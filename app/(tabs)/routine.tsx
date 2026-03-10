@@ -10,8 +10,12 @@ import {
   Alert,
   ScrollView,
   Switch,
-  Modal,
   ActivityIndicator,
+  Animated,
+  PanResponder,
+  KeyboardAvoidingView,
+  BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,6 +29,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useSchedule } from '@/context/ScheduleContext';
 import type { AlertMode } from '@/context/ScheduleContext';
 import Colors from '@/constants/colors';
+import { useTabScreenViewAnalytics } from '@/lib/usageAnalytics';
 
 type RoutineItem = {
   id: string;
@@ -49,6 +54,7 @@ type ImportedRoutine = {
   reminderEnabled: number;
 };
 type Meridiem = 'AM' | 'PM';
+type SheetView = 'none' | 'add' | 'upload-options' | 'upload-excel' | 'upload-json';
 
 const ROUTINE_KEY = 'unischedule_daily_routine';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -442,7 +448,9 @@ async function scheduleRoutineNotifications(item: RoutineItem, mode: AlertMode, 
 }
 
 export default function RoutineScreen() {
+  useTabScreenViewAnalytics('Routine', 'RoutineScreen');
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const { routineAlertMode, reminderLeadTime } = useSchedule();
 
   const [items, setItems] = useState<RoutineItem[]>([]);
@@ -450,7 +458,7 @@ export default function RoutineScreen() {
   const [selectedDay, setSelectedDay] = useState(getTodayShort());
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  const [modalOpen, setModalOpen] = useState(false);
+  const [sheetView, setSheetView] = useState<SheetView>('none');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [formDay, setFormDay] = useState(getTodayShort());
@@ -461,16 +469,15 @@ export default function RoutineScreen() {
   const [endMeridiem, setEndMeridiem] = useState<Meridiem>('AM');
   const [notes, setNotes] = useState('');
   const [reminderEnabled, setReminderEnabled] = useState(false);
-  const [importOptionsModalOpen, setImportOptionsModalOpen] = useState(false);
-  const [importExcelModalOpen, setImportExcelModalOpen] = useState(false);
-  const [importJsonModalOpen, setImportJsonModalOpen] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
   const [importing, setImporting] = useState(false);
   const documentPickingRef = useRef(false);
   const routineResyncingRef = useRef(false);
+  const sheetTranslateY = useRef(new Animated.Value(windowHeight)).current;
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
   const bottomPad = Platform.OS === 'web' ? 84 + 34 : insets.bottom + 84;
+  const sheetOpen = sheetView !== 'none';
 
   const persistRoutine = useCallback(async (next: RoutineItem[]) => {
     const sorted = sortRoutine(next);
@@ -584,7 +591,7 @@ export default function RoutineScreen() {
   const openAdd = () => {
     resetForm();
     setFormDay(selectedDay);
-    setModalOpen(true);
+    setSheetView('add');
   };
 
   const openEdit = (item: RoutineItem) => {
@@ -597,13 +604,20 @@ export default function RoutineScreen() {
     setEndMeridiem(toMeridiem(item.endTime));
     setNotes(item.notes);
     setReminderEnabled(!!item.reminderEnabled);
-    setModalOpen(true);
+    setSheetView('add');
   };
 
-  const closeModal = () => {
-    setModalOpen(false);
-    resetForm();
-  };
+  const closeSheet = useCallback(() => {
+    Animated.timing(sheetTranslateY, {
+      toValue: windowHeight,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setSheetView('none');
+      resetForm();
+      setImportJsonText('');
+    });
+  }, [sheetTranslateY, windowHeight]);
 
   const importParsedItems = async (rows: ImportedRoutine[]) => {
     if (rows.length === 0) {
@@ -648,7 +662,7 @@ export default function RoutineScreen() {
   };
 
   const openImportOptions = () => {
-    setImportOptionsModalOpen(true);
+    setSheetView('upload-options');
   };
 
   const importFromJson = async () => {
@@ -657,8 +671,7 @@ export default function RoutineScreen() {
       if (!Array.isArray(raw)) throw new Error('JSON must be an array.');
       const rows = parseImportedRows(raw as Array<Record<string, unknown>>);
       await importParsedItems(rows);
-      setImportJsonModalOpen(false);
-      setImportJsonText('');
+      closeSheet();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Invalid JSON import.';
       Alert.alert('Import failed', msg);
@@ -690,7 +703,7 @@ export default function RoutineScreen() {
       if (!rows.length) throw new Error('No rows found in first sheet. Add header row and data rows.');
       const parsed = parseImportedRows(rows);
       await importParsedItems(parsed);
-      setImportExcelModalOpen(false);
+      closeSheet();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Could not import Excel.';
       Alert.alert('Excel import failed', msg);
@@ -773,7 +786,7 @@ export default function RoutineScreen() {
     }
 
     Haptics.selectionAsync();
-    closeModal();
+    closeSheet();
   };
 
   const toggleDone = async (id: string, value: boolean) => {
@@ -823,6 +836,70 @@ export default function RoutineScreen() {
     () => (loading ? 'Loading...' : `No routine items for ${DAY_FULL[selectedDay]}. Tap + to add one.`),
     [loading, selectedDay]
   );
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          sheetOpen &&
+          gesture.dy > 6 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderMove: (_, gesture) => {
+          sheetTranslateY.setValue(Math.max(0, gesture.dy));
+        },
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dy > 120 || gesture.vy > 1.1) {
+            closeSheet();
+            return;
+          }
+          Animated.spring(sheetTranslateY, {
+            toValue: 0,
+            damping: 25,
+            stiffness: 260,
+            mass: 0.8,
+            useNativeDriver: true,
+          }).start();
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(sheetTranslateY, {
+            toValue: 0,
+            damping: 25,
+            stiffness: 260,
+            mass: 0.8,
+            useNativeDriver: true,
+          }).start();
+        },
+      }),
+    [closeSheet, sheetOpen, sheetTranslateY]
+  );
+
+  useEffect(() => {
+    if (!sheetOpen) {
+      sheetTranslateY.setValue(windowHeight);
+      return;
+    }
+    sheetTranslateY.setValue(windowHeight);
+    Animated.spring(sheetTranslateY, {
+      toValue: 0,
+      damping: 25,
+      stiffness: 260,
+      mass: 0.8,
+      useNativeDriver: true,
+    }).start();
+  }, [sheetOpen, sheetTranslateY, windowHeight]);
+
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (sheetView === 'upload-excel' || sheetView === 'upload-json') {
+        setSheetView('upload-options');
+        return true;
+      }
+      closeSheet();
+      return true;
+    });
+    return () => sub.remove();
+  }, [closeSheet, sheetOpen, sheetView]);
 
   const now = new Date(nowMs);
 
@@ -920,279 +997,275 @@ export default function RoutineScreen() {
         )}
       />
 
-      <Modal visible={modalOpen} animationType="slide" transparent onRequestClose={closeModal}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{editingId ? 'Edit Routine' : 'Add Routine'}</Text>
-              <TouchableOpacity onPress={closeModal} hitSlop={8}>
-                <Ionicons name="close" size={20} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalDayRow}>
-              {DAYS.map(d => (
-                <TouchableOpacity
-                  key={`form-${d}`}
-                  style={[styles.modalDayPill, formDay === d && styles.modalDayPillSelected]}
-                  onPress={() => setFormDay(d)}
-                >
-                  <Text style={[styles.modalDayText, formDay === d && styles.modalDayTextSelected]}>{d}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <TextInput
-              style={styles.input}
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Routine title"
-              placeholderTextColor={Colors.textMuted}
-            />
-
-            <View style={styles.modeRow}>
-              <Text style={styles.modeLabel}>Time Format</Text>
-              <View style={styles.modeSwitch}>
-                <TouchableOpacity
-                  style={[styles.modeChip, is24Hour && styles.modeChipActive]}
-                  onPress={() => setIs24Hour(true)}
-                >
-                  <Text style={[styles.modeChipText, is24Hour && styles.modeChipTextActive]}>24H</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modeChip, !is24Hour && styles.modeChipActive]}
-                  onPress={() => setIs24Hour(false)}
-                >
-                  <Text style={[styles.modeChipText, !is24Hour && styles.modeChipTextActive]}>AM/PM</Text>
-                </TouchableOpacity>
+      {sheetOpen && (
+        <View style={styles.sheetOverlay}>
+          <TouchableOpacity style={styles.sheetBackdrop} activeOpacity={1} onPress={closeSheet} />
+          <Animated.View style={[styles.sheetContainer, { transform: [{ translateY: sheetTranslateY }] }]}>
+            <KeyboardAvoidingView style={styles.sheetKeyboardWrap} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+              <View style={[styles.sheetHeader, { paddingTop: insets.top + 8 }]}>
+                <View style={styles.grabberTouchArea} {...panResponder.panHandlers}>
+                  <View style={styles.grabber} />
+                </View>
+                <View style={styles.formHeaderRow}>
+                  {(sheetView === 'upload-excel' || sheetView === 'upload-json') ? (
+                    <TouchableOpacity onPress={() => setSheetView('upload-options')} hitSlop={8} style={styles.backBtn}>
+                      <Ionicons name="chevron-back" size={20} color={Colors.text} />
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={styles.backBtnPlaceholder} />
+                  )}
+                  <Text style={styles.modalTitle}>
+                    {sheetView === 'add'
+                      ? (editingId ? 'Edit Routine' : 'Add Routine')
+                      : sheetView === 'upload-options'
+                      ? 'Import Routine'
+                      : sheetView === 'upload-excel'
+                      ? 'Upload Excel'
+                      : 'Import JSON'}
+                  </Text>
+                  <TouchableOpacity onPress={closeSheet} hitSlop={8} style={styles.backBtn}>
+                    <Ionicons name="close" size={20} color={Colors.text} />
+                  </TouchableOpacity>
+                </View>
               </View>
-            </View>
 
-            <View style={styles.timeBlock}>
-              <Text style={styles.timeFieldLabel}>Start Time</Text>
-              <View style={styles.timeInputWrap}>
-                <TextInput
-                  style={[styles.input, styles.timeInput]}
-                  value={startTime}
-                  onChangeText={setStartTime}
-                  placeholder={is24Hour ? 'e.g. 14:00' : 'e.g. 2:00'}
-                  placeholderTextColor={Colors.textMuted}
-                  keyboardType="numbers-and-punctuation"
-                  selectionColor={Colors.primary}
-                  cursorColor={Colors.primary}
-                  underlineColorAndroid="transparent"
-                />
-                {!is24Hour && (
-                  <View style={styles.meridiemRow}>
-                    {(['AM', 'PM'] as const).map(mer => (
+              {sheetView === 'add' && (
+                <ScrollView
+                  style={styles.formScroll}
+                  contentContainerStyle={[styles.formContent, { paddingBottom: insets.bottom + 20 }]}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalDayRow}>
+                    {DAYS.map(d => (
                       <TouchableOpacity
-                        key={`routine-start-${mer}`}
-                        style={[styles.meridiemChip, startMeridiem === mer && styles.meridiemChipActive]}
-                        onPress={() => setStartMeridiem(mer)}
+                        key={`form-${d}`}
+                        style={[styles.modalDayPill, formDay === d && styles.modalDayPillSelected]}
+                        onPress={() => setFormDay(d)}
                       >
-                        <Text style={[styles.meridiemText, startMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                        <Text style={[styles.modalDayText, formDay === d && styles.modalDayTextSelected]}>{d}</Text>
                       </TouchableOpacity>
                     ))}
-                  </View>
-                )}
-              </View>
-            </View>
+                  </ScrollView>
 
-            <View style={styles.timeBlock}>
-              <Text style={styles.timeFieldLabel}>End Time</Text>
-              <View style={styles.timeInputWrap}>
-                <TextInput
-                  style={[styles.input, styles.timeInput]}
-                  value={endTime}
-                  onChangeText={setEndTime}
-                  placeholder={is24Hour ? 'e.g. 15:30' : 'e.g. 3:30'}
-                  placeholderTextColor={Colors.textMuted}
-                  keyboardType="numbers-and-punctuation"
-                  selectionColor={Colors.primary}
-                  cursorColor={Colors.primary}
-                  underlineColorAndroid="transparent"
-                />
-                {!is24Hour && (
-                  <View style={styles.meridiemRow}>
-                    {(['AM', 'PM'] as const).map(mer => (
+                  <TextInput
+                    style={styles.input}
+                    value={title}
+                    onChangeText={setTitle}
+                    placeholder="Routine title"
+                    placeholderTextColor={Colors.textMuted}
+                  />
+
+                  <View style={styles.modeRow}>
+                    <Text style={styles.modeLabel}>Time Format</Text>
+                    <View style={styles.modeSwitch}>
                       <TouchableOpacity
-                        key={`routine-end-${mer}`}
-                        style={[styles.meridiemChip, endMeridiem === mer && styles.meridiemChipActive]}
-                        onPress={() => setEndMeridiem(mer)}
+                        style={[styles.modeChip, is24Hour && styles.modeChipActive]}
+                        onPress={() => setIs24Hour(true)}
                       >
-                        <Text style={[styles.meridiemText, endMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                        <Text style={[styles.modeChipText, is24Hour && styles.modeChipTextActive]}>24H</Text>
                       </TouchableOpacity>
-                    ))}
+                      <TouchableOpacity
+                        style={[styles.modeChip, !is24Hour && styles.modeChipActive]}
+                        onPress={() => setIs24Hour(false)}
+                      >
+                        <Text style={[styles.modeChipText, !is24Hour && styles.modeChipTextActive]}>AM/PM</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                )}
-              </View>
-            </View>
 
-            <TextInput
-              style={[styles.input, styles.notesInput]}
-              value={notes}
-              onChangeText={setNotes}
-              placeholder="Notes (optional)"
-              placeholderTextColor={Colors.textMuted}
-              multiline
-            />
+                  <View style={styles.timeBlock}>
+                    <Text style={styles.timeFieldLabel}>Start Time</Text>
+                    <View style={styles.timeInputWrap}>
+                      <TextInput
+                        style={[styles.input, styles.timeInput]}
+                        value={startTime}
+                        onChangeText={setStartTime}
+                        placeholder={is24Hour ? 'e.g. 14:00' : 'e.g. 2:00'}
+                        placeholderTextColor={Colors.textMuted}
+                        keyboardType="numbers-and-punctuation"
+                        selectionColor={Colors.primary}
+                        cursorColor={Colors.primary}
+                        underlineColorAndroid="transparent"
+                      />
+                      {!is24Hour && (
+                        <View style={styles.meridiemRow}>
+                          {(['AM', 'PM'] as const).map(mer => (
+                            <TouchableOpacity
+                              key={`routine-start-${mer}`}
+                              style={[styles.meridiemChip, startMeridiem === mer && styles.meridiemChipActive]}
+                              onPress={() => setStartMeridiem(mer)}
+                            >
+                              <Text style={[styles.meridiemText, startMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  </View>
 
-            <View style={styles.formReminderRow}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Ionicons name="notifications-outline" size={14} color={Colors.textMuted} />
-                <Text style={styles.reminderLabel}>Reminder</Text>
-              </View>
-              <Switch
-                value={reminderEnabled}
-                onValueChange={setReminderEnabled}
-                trackColor={{ false: Colors.surface3, true: Colors.primaryDim }}
-                thumbColor={reminderEnabled ? Colors.primary : Colors.textMuted}
-                style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
-              />
-            </View>
+                  <View style={styles.timeBlock}>
+                    <Text style={styles.timeFieldLabel}>End Time</Text>
+                    <View style={styles.timeInputWrap}>
+                      <TextInput
+                        style={[styles.input, styles.timeInput]}
+                        value={endTime}
+                        onChangeText={setEndTime}
+                        placeholder={is24Hour ? 'e.g. 15:30' : 'e.g. 3:30'}
+                        placeholderTextColor={Colors.textMuted}
+                        keyboardType="numbers-and-punctuation"
+                        selectionColor={Colors.primary}
+                        cursorColor={Colors.primary}
+                        underlineColorAndroid="transparent"
+                      />
+                      {!is24Hour && (
+                        <View style={styles.meridiemRow}>
+                          {(['AM', 'PM'] as const).map(mer => (
+                            <TouchableOpacity
+                              key={`routine-end-${mer}`}
+                              style={[styles.meridiemChip, endMeridiem === mer && styles.meridiemChipActive]}
+                              onPress={() => setEndMeridiem(mer)}
+                            >
+                              <Text style={[styles.meridiemText, endMeridiem === mer && styles.meridiemTextActive]}>{mer}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                  </View>
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={closeModal}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={saveItem}>
-                <Ionicons name={editingId ? 'checkmark' : 'add'} size={18} color={Colors.bg} />
-                <Text style={styles.saveText}>{editingId ? 'Update' : 'Add'}</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+                  <TextInput
+                    style={[styles.input, styles.notesInput]}
+                    value={notes}
+                    onChangeText={setNotes}
+                    placeholder="Notes (optional)"
+                    placeholderTextColor={Colors.textMuted}
+                    multiline
+                  />
+
+                  <View style={styles.formReminderRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="notifications-outline" size={14} color={Colors.textMuted} />
+                      <Text style={styles.reminderLabel}>Reminder</Text>
+                    </View>
+                    <Switch
+                      value={reminderEnabled}
+                      onValueChange={setReminderEnabled}
+                      trackColor={{ false: Colors.surface3, true: Colors.primaryDim }}
+                      thumbColor={reminderEnabled ? Colors.primary : Colors.textMuted}
+                      style={{ transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }] }}
+                    />
+                  </View>
+
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={closeSheet}>
+                      <Text style={styles.cancelText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.saveBtn} onPress={() => { void saveItem(); }}>
+                      <Ionicons name={editingId ? 'checkmark' : 'add'} size={18} color={Colors.bg} />
+                      <Text style={styles.saveText}>{editingId ? 'Update' : 'Add'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              )}
+
+              {sheetView === 'upload-options' && (
+                <View style={[styles.formContent, { paddingBottom: insets.bottom + 20 }]}>
+                  <Text style={styles.subtitleText}>Choose how you would like to import your routine</Text>
+
+                  <TouchableOpacity style={styles.optionCard} onPress={() => setSheetView('upload-json')}>
+                    <View style={styles.optionIcon}>
+                      <Ionicons name="code-slash-outline" size={22} color={Colors.primary} />
+                    </View>
+                    <View style={styles.optionText}>
+                      <Text style={styles.optionTitle}>Paste JSON</Text>
+                      <Text style={styles.optionDesc}>Import from a JSON array of routine items</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.optionCard} onPress={() => setSheetView('upload-excel')}>
+                    <View style={[styles.optionIcon, { backgroundColor: 'rgba(74,144,217,0.1)' }]}>
+                      <Ionicons name="document-text-outline" size={22} color={Colors.accent} />
+                    </View>
+                    <View style={styles.optionText}>
+                      <Text style={styles.optionTitle}>Upload Excel</Text>
+                      <Text style={styles.optionDesc}>Works when columns are: day, title, startTime, endTime, notes, reminderEnabled, done</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {sheetView === 'upload-excel' && (
+                <View style={[styles.formContent, { paddingBottom: insets.bottom + 20 }]}>
+                  <Text style={styles.importHelpText}>
+                    Select an Excel or CSV file. Required columns: day, title, startTime, endTime.
+                  </Text>
+
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={() => setSheetView('upload-options')}>
+                      <Text style={styles.cancelText}>Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.saveBtn}
+                      onPress={() => { void importFromExcel(); }}
+                      disabled={importing}
+                    >
+                      {importing ? (
+                        <ActivityIndicator size="small" color={Colors.bg} />
+                      ) : (
+                        <>
+                          <Ionicons name="folder-open-outline" size={16} color={Colors.bg} />
+                          <Text style={styles.saveText}>Choose File</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+
+              {sheetView === 'upload-json' && (
+                <ScrollView
+                  style={styles.formScroll}
+                  contentContainerStyle={[styles.formContent, { paddingBottom: insets.bottom + 20 }]}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  <Text style={styles.importHelpText}>
+                    Use an array of objects with fields: day, title, startTime, endTime, notes, reminderEnabled, done
+                  </Text>
+
+                  <TextInput
+                    style={[styles.input, styles.importJsonInput]}
+                    value={importJsonText}
+                    onChangeText={setImportJsonText}
+                    placeholder={`[\n  {\n    "day": "Monday",\n    "title": "Gym",\n    "startTime": "07:00",\n    "endTime": "08:00"\n  }\n]`}
+                    placeholderTextColor={Colors.textMuted}
+                    multiline
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={() => setSheetView('upload-options')}>
+                      <Text style={styles.cancelText}>Back</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.saveBtn} onPress={() => { void importFromJson(); }} disabled={importing}>
+                      {importing ? (
+                        <ActivityIndicator size="small" color={Colors.bg} />
+                      ) : (
+                        <>
+                          <Ionicons name="cloud-upload-outline" size={16} color={Colors.bg} />
+                          <Text style={styles.saveText}>Import</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
+              )}
+            </KeyboardAvoidingView>
+          </Animated.View>
         </View>
-      </Modal>
-
-      <Modal visible={importOptionsModalOpen} animationType="fade" transparent onRequestClose={() => setImportOptionsModalOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Import Routine</Text>
-              <TouchableOpacity onPress={() => setImportOptionsModalOpen(false)} hitSlop={8}>
-                <Ionicons name="close" size={20} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.subtitleText}>Choose how you'd like to import your routine</Text>
-
-            <TouchableOpacity
-              style={styles.optionCard}
-              onPress={() => {
-                setImportOptionsModalOpen(false);
-                setImportJsonModalOpen(true);
-              }}
-            >
-              <View style={styles.optionIcon}>
-                <Ionicons name="code-slash-outline" size={22} color={Colors.primary} />
-              </View>
-              <View style={styles.optionText}>
-                <Text style={styles.optionTitle}>Paste JSON</Text>
-                <Text style={styles.optionDesc}>Import from a JSON array of routine items</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.optionCard}
-              onPress={() => {
-                setImportOptionsModalOpen(false);
-                setImportExcelModalOpen(true);
-              }}
-            >
-              <View style={[styles.optionIcon, { backgroundColor: 'rgba(74,144,217,0.1)' }]}>
-                <Ionicons name="document-text-outline" size={22} color={Colors.accent} />
-              </View>
-              <View style={styles.optionText}>
-                <Text style={styles.optionTitle}>Upload Excel</Text>
-                <Text style={styles.optionDesc}>Works when columns are: day, title, startTime, endTime, notes, reminderEnabled, done</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={importExcelModalOpen} animationType="fade" transparent onRequestClose={() => setImportExcelModalOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Upload Excel</Text>
-              <TouchableOpacity onPress={() => setImportExcelModalOpen(false)} hitSlop={8}>
-                <Ionicons name="close" size={20} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.importHelpText}>
-              Select an Excel or CSV file. Required columns: day, title, startTime, endTime.
-            </Text>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setImportExcelModalOpen(false)}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.saveBtn}
-                onPress={() => { void importFromExcel(); }}
-                disabled={importing}
-              >
-                {importing ? (
-                  <ActivityIndicator size="small" color={Colors.bg} />
-                ) : (
-                  <>
-                    <Ionicons name="folder-open-outline" size={16} color={Colors.bg} />
-                    <Text style={styles.saveText}>Choose File</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={importJsonModalOpen} animationType="fade" transparent onRequestClose={() => setImportJsonModalOpen(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Import JSON</Text>
-              <TouchableOpacity onPress={() => setImportJsonModalOpen(false)} hitSlop={8}>
-                <Ionicons name="close" size={20} color={Colors.text} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.importHelpText}>
-              Use an array of objects with fields: day, title, startTime, endTime, notes, reminderEnabled, done
-            </Text>
-
-            <TextInput
-              style={[styles.input, styles.importJsonInput]}
-              value={importJsonText}
-              onChangeText={setImportJsonText}
-              placeholder={`[\n  {\n    "day": "Monday",\n    "title": "Gym",\n    "startTime": "07:00",\n    "endTime": "08:00"\n  }\n]`}
-              placeholderTextColor={Colors.textMuted}
-              multiline
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setImportJsonModalOpen(false)}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={() => { void importFromJson(); }} disabled={importing}>
-                {importing ? (
-                  <ActivityIndicator size="small" color={Colors.bg} />
-                ) : (
-                  <>
-                    <Ionicons name="cloud-upload-outline" size={16} color={Colors.bg} />
-                    <Text style={styles.saveText}>Import</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      )}
     </View>
   );
 }
@@ -1393,28 +1466,63 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: Colors.primary,
   },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    padding: 16,
+  sheetOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
   },
-  modalCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: 14,
-    gap: 10,
-    maxHeight: '90%',
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  sheetContainer: {
+    height: '100%',
+    backgroundColor: Colors.bg,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
     overflow: 'hidden',
   },
-  modalHeader: {
+  sheetKeyboardWrap: {
+    flex: 1,
+  },
+  sheetHeader: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    backgroundColor: Colors.bg,
+  },
+  grabberTouchArea: {
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  grabber: {
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: Colors.surface3,
+  },
+  formHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 5,
-    paddingBottom: 5,
+    paddingBottom: 4,
+  },
+  backBtn: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  backBtnPlaceholder: {
+    width: 28,
+  },
+  formScroll: {
+    flex: 1,
+  },
+  formContent: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    gap: 10,
   },
   modalTitle: {
     color: Colors.text,

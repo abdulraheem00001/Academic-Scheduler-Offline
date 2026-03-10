@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "UniSchedule",
+    "name": "UniCompanion",
     "slug": "unischedule",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -15,13 +15,15 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.unischedule",
+      "bundleIdentifier": "com.company.unicompanion",
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.unischedule",
+      "package": "com.company.unicompanion",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0A0E1A",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -53,7 +55,9 @@
         {
           "enableFTS": true
         }
-      ]
+      ],
+      "@react-native-firebase/app",
+      "expo-build-properties"
     ],
     "experiments": {
       "typedRoutes": true,

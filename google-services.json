@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "716189049175",
+    "project_id": "uni-companion-39b12",
+    "storage_bucket": "uni-companion-39b12.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:716189049175:android:1b769052e429602f631e12",
+        "android_client_info": {
+          "package_name": "com.company.unicompanion"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDWJ5DAsCAYvRR4JN1OHvCAnH5CqhQfJ30"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

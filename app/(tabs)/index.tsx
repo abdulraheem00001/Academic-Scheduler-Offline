@@ -30,6 +30,7 @@ import * as Haptics from 'expo-haptics';
 import { useSchedule } from '@/context/ScheduleContext';
 import { Lecture } from '@/lib/database';
 import Colors from '@/constants/colors';
+import { useTabScreenViewAnalytics } from '@/lib/usageAnalytics';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DAY_FULL: Record<string, string> = {
@@ -254,6 +255,7 @@ function LectureCard({ lecture, isCurrent, onEdit, onDelete, onToggleReminder }:
 }
 
 export default function ScheduleScreen() {
+  useTabScreenViewAnalytics('Schedule', 'ScheduleScreen');
   const insets = useSafeAreaInsets();
   const { lectures, loading, removeLecture, toggleLectureReminder } = useSchedule();
   const [selectedDay, setSelectedDay] = useState(getTodayShort());
@@ -297,7 +299,7 @@ export default function ScheduleScreen() {
     <View style={[styles.container, { paddingTop: topPad }]}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.appTitle}>UniSchedule</Text>
+          <Text style={styles.appTitle}>Uni Schedule</Text>
           <Text style={styles.dateSubtitle}>
             {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
           </Text>

@@ -18,6 +18,14 @@ function NativeTabLayout() {
         <Icon sf={{ default: 'list.bullet', selected: 'list.bullet' }} />
         <Label>Routine</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="notes">
+        <Icon sf={{ default: 'note.text', selected: 'note.text' }} />
+        <Label>Notes</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="gpa">
+        <Icon sf={{ default: 'function', selected: 'function' }} />
+        <Label>GPA</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Icon sf={{ default: 'gearshape', selected: 'gearshape.fill' }} />
         <Label>Settings</Label>
@@ -67,6 +75,24 @@ function ClassicTabLayout() {
           title: 'Routine',
           tabBarIcon: ({ color }) => (
             <Ionicons name="list-outline" size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="notes"
+        options={{
+          title: 'Notes',
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="document-text-outline" size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="gpa"
+        options={{
+          title: 'GPA',
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="calculator-outline" size={24} color={color} />
           ),
         }}
       />

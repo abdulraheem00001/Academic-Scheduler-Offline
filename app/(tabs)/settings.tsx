@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSchedule } from '@/context/ScheduleContext';
 import type { AlertMode } from '@/context/ScheduleContext';
 import Colors from '@/constants/colors';
+import { useTabScreenViewAnalytics } from '@/lib/usageAnalytics';
 
 const LEAD_TIMES = [5, 10, 15, 20, 30];
 const ROUTINE_KEY = 'unischedule_daily_routine';
@@ -121,6 +122,7 @@ async function scheduleRoutineForMode(item: StoredRoutine, mode: AlertMode, lead
 }
 
 export default function SettingsScreen() {
+  useTabScreenViewAnalytics('Setting', 'SettingsScreen');
   const insets = useSafeAreaInsets();
   const {
     reminderLeadTime,
@@ -360,7 +362,7 @@ export default function SettingsScreen() {
           <View style={styles.aboutCard}>
             <View style={styles.aboutRow}>
               <Text style={styles.aboutLabel}>Version</Text>
-              <Text style={styles.aboutValue}>3.0.0</Text>
+              <Text style={styles.aboutValue}>4.0.0</Text>
             </View>
             <View style={[styles.aboutRow, { borderBottomWidth: 0 }]}>
               <Text style={styles.aboutLabel}>Storage</Text>
@@ -455,6 +457,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
+    flex: 1,
+    alignItems: 'center',
   },
   pillSelected: {
     backgroundColor: Colors.primary,

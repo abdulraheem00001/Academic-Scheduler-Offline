@@ -7,6 +7,7 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { queryClient } from '@/lib/query-client';
 import { ScheduleProvider } from '@/context/ScheduleContext';
+import { setupAppUsageAnalytics } from '@/lib/usageAnalytics';
 import { StatusBar } from 'expo-status-bar';
 import {
   Inter_400Regular,
@@ -53,6 +54,11 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded]);
+
+  useEffect(() => {
+    const teardown = setupAppUsageAnalytics();
+    return teardown;
+  }, []);
 
   if (!fontsLoaded) return null;
 
