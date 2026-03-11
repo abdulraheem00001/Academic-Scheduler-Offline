@@ -62,14 +62,21 @@ const LETTER_TO_POINTS: Record<string, number> = {
 };
 
 const DEFAULT_GRADING_CRITERIA: GpaCriteriaRange[] = [
-  { id: 'default-1', minPercentage: 85, maxPercentage: 100, gpa: 4.0 },
-  { id: 'default-2', minPercentage: 80, maxPercentage: 84, gpa: 3.7 },
-  { id: 'default-3', minPercentage: 75, maxPercentage: 79, gpa: 3.5 },
-  { id: 'default-4', minPercentage: 70, maxPercentage: 74, gpa: 3.0 },
-  { id: 'default-5', minPercentage: 65, maxPercentage: 69, gpa: 2.5 },
-  { id: 'default-6', minPercentage: 60, maxPercentage: 64, gpa: 2.0 },
-  { id: 'default-7', minPercentage: 0, maxPercentage: 59, gpa: 0.0 },
+  { id: 'default-1', minPercentage: 89.5, maxPercentage: 100, gpa: 4.0 },
+  { id: 'default-2', minPercentage: 79.5, maxPercentage: 89.4, gpa: 4.0 },
+  { id: 'default-3', minPercentage: 76.5, maxPercentage: 79.4, gpa: 3.66 },
+  { id: 'default-4', minPercentage: 73.5, maxPercentage: 76.4, gpa: 3.33 },
+  { id: 'default-5', minPercentage: 69.5, maxPercentage: 73.4, gpa: 3.0 },
+  { id: 'default-6', minPercentage: 66.5, maxPercentage: 69.4, gpa: 2.66 },
+  { id: 'default-7', minPercentage: 63.5, maxPercentage: 66.4, gpa: 2.33 },
+  { id: 'default-8', minPercentage: 59.5, maxPercentage: 63.4, gpa: 2.0 },
+  { id: 'default-9', minPercentage: 0, maxPercentage: 59.4, gpa: 1.0 },
 ];
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
 
 function toNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -120,7 +127,9 @@ export function gradeOrMarksToPointsWithCriteria(
 
   if (n < 0 || n > 100) return null;
   const normalizedCriteria = normalizeCriteria(criteria);
-  const matched = normalizedCriteria.find(range => n >= range.minPercentage && n <= range.maxPercentage);
+  const matched = normalizedCriteria.find(
+    range => n >= range.minPercentage - 1e-9 && n <= range.maxPercentage + 1e-9
+  );
   return matched ? matched.gpa : null;
 }
 
@@ -196,9 +205,12 @@ export function calculateSemesterGpa(
     }
   }
 
+  const gpa = totalCredits > 0 ? roundTo(qualityPoints / totalCredits, 2) : null;
+  const percentage = percentageCredits > 0 ? roundTo(percentagePoints / percentageCredits, 2) : null;
+
   return {
-    gpa: totalCredits > 0 ? qualityPoints / totalCredits : null,
-    percentage: percentageCredits > 0 ? percentagePoints / percentageCredits : null,
+    gpa,
+    percentage,
     totalCredits,
     qualityPoints,
     validSubjects,

@@ -16,6 +16,27 @@ import {
   Inter_700Bold,
   useFonts,
 } from '@expo-google-fonts/inter';
+import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
+
+// Configure notification handler for all app states
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowList: true,
+  }),
+});
+
+// Handle notifications when app is in background/closed
+Notifications.addNotificationReceivedListener((notification) => {
+  console.log('Notification received:', notification.request.content.title);
+});
+
+Notifications.addNotificationResponseReceivedListener((response) => {
+  console.log('Notification response:', response.notification.request.content.title);
+});
 
 SplashScreen.preventAutoHideAsync();
 

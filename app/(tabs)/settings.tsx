@@ -75,6 +75,18 @@ function getWeeklyTrigger(day: string, time: string, offsetMins = 0): Notificati
 }
 
 async function ensureNotificationPermission(): Promise<boolean> {
+  // For Android 13+, we need to request POST_NOTIFICATIONS permission
+  if (Platform.OS === 'android') {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    if (existingStatus === 'granted') {
+      return true;
+    }
+    
+    const { status } = await Notifications.requestPermissionsAsync();
+    return status === 'granted';
+  }
+  
+  // For iOS
   const perms = await Notifications.getPermissionsAsync();
   if (perms.granted || perms.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) return true;
   const req = await Notifications.requestPermissionsAsync();

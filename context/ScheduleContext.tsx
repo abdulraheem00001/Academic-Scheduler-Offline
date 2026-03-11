@@ -1,6 +1,6 @@
 ﻿import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo } from 'react';
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { Platform, AppState, AppStateStatus } from 'react-native';
 import {
   Lecture,
   InsertLecture,
@@ -15,14 +15,29 @@ import {
   deleteAllLectures,
 } from '@/lib/database';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowList: true,
-  }),
-});
+// Initialize notification channel for Android
+if (Platform.OS === 'android') {
+  Notifications.setNotificationChannelAsync('default', {
+    name: 'Default',
+    importance: Notifications.AndroidImportance.HIGH,
+    vibrationPattern: [0, 250, 250, 250],
+    sound: 'default',
+  });
+  
+  Notifications.setNotificationChannelAsync('lectures', {
+    name: 'Lecture Reminders',
+    importance: Notifications.AndroidImportance.HIGH,
+    vibrationPattern: [0, 250, 250, 250],
+    sound: 'default',
+  });
+  
+  Notifications.setNotificationChannelAsync('routine', {
+    name: 'Routine Reminders',
+    importance: Notifications.AndroidImportance.HIGH,
+    vibrationPattern: [0, 250, 250, 250],
+    sound: 'default',
+  });
+}
 
 const ALERT_MODES = ['none', 'start', 'end', 'both'] as const;
 export type AlertMode = typeof ALERT_MODES[number];
@@ -65,7 +80,7 @@ function getDayNumber(day: string): number {
   return days[day] ?? -1;
 }
 
-function getWeeklyTrigger(day: string, time: string, offsetMins = 0): { weekday: number; hour: number; minute: number } | null {
+function getWeeklyTrigger(day: string, time: string, offsetMins = 0): Notifications.CalendarTriggerInput | null {
   const dayNum = getDayNumber(day);
   if (dayNum < 0) return null;
 
@@ -76,16 +91,34 @@ function getWeeklyTrigger(day: string, time: string, offsetMins = 0): { weekday:
     triggerDay = (triggerDay + 6) % 7;
   }
 
+  const weekday = triggerDay === 0 ? 1 : triggerDay + 1;
+  const hour = Math.floor(mins / 60);
+  const minute = mins % 60;
+  
   return {
-    weekday: triggerDay === 0 ? 1 : triggerDay + 1,
-    hour: Math.floor(mins / 60),
-    minute: mins % 60,
+    type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+    weekday,
+    hour,
+    minute,
+    repeats: true,
   };
 }
 
 async function requestNotificationPermissions(): Promise<boolean> {
   if (Platform.OS === 'web') return false;
 
+  // For Android 13+, we need to request POST_NOTIFICATIONS permission
+  if (Platform.OS === 'android') {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    if (existingStatus === 'granted') {
+      return true;
+    }
+    
+    const { status } = await Notifications.requestPermissionsAsync();
+    return status === 'granted';
+  }
+  
+  // For iOS
   const existing = await Notifications.getPermissionsAsync();
   if (existing.granted || existing.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) {
     return true;
@@ -116,12 +149,7 @@ async function scheduleLectureNotifications(lecture: Lecture, mode: AlertMode, l
           body: `${lecture.room} · ${lecture.teacher} · Starts at ${lecture.startTime}`,
           sound: true,
         },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-          weekday: trigger.weekday,
-          hour: trigger.hour,
-          minute: trigger.minute,
-        },
+        trigger,
       });
       ids.push(id);
     }
@@ -137,12 +165,7 @@ async function scheduleLectureNotifications(lecture: Lecture, mode: AlertMode, l
           body: `${lecture.room} · ${lecture.teacher}`,
           sound: true,
         },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-          weekday: trigger.weekday,
-          hour: trigger.hour,
-          minute: trigger.minute,
-        },
+        trigger,
       });
       ids.push(id);
     }
@@ -158,12 +181,7 @@ async function scheduleLectureNotifications(lecture: Lecture, mode: AlertMode, l
           body: `${lecture.room} · ${lecture.teacher}`,
           sound: true,
         },
-        trigger: {
-          type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-          weekday: trigger.weekday,
-          hour: trigger.hour,
-          minute: trigger.minute,
-        },
+        trigger,
       });
       ids.push(id);
     }
