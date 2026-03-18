@@ -379,12 +379,12 @@ export default function SettingsScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Ionicons name="school" size={16} color={Colors.primary} />
-            <Text style={styles.sectionTitle}>About UniSchedule</Text>
+            <Text style={styles.sectionTitle}>About UniCompanion</Text>
           </View>
           <View style={styles.aboutCard}>
             <View style={styles.aboutRow}>
               <Text style={styles.aboutLabel}>Version</Text>
-              <Text style={styles.aboutValue}>4.0.0</Text>
+              <Text style={styles.aboutValue}>1.0</Text>
             </View>
             <View style={[styles.aboutRow, { borderBottomWidth: 0 }]}>
               <Text style={styles.aboutLabel}>Storage</Text>
