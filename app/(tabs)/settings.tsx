@@ -7,6 +7,7 @@ import {
   ScrollView,
   Platform,
   Alert,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +21,7 @@ import { useTabScreenViewAnalytics } from '@/lib/usageAnalytics';
 
 const LEAD_TIMES = [5, 10, 15, 20, 30];
 const ROUTINE_KEY = 'unischedule_daily_routine';
+const PRIVACY_POLICY_URL = 'https://abdulraheem00001.github.io/UniCompanion/privacy.html';
 const ALERT_MODE_OPTIONS: AlertMode[] = ['none', 'start', 'end', 'both'];
 
 const ALERT_MODE_LABEL: Record<AlertMode, string> = {
@@ -281,6 +283,14 @@ export default function SettingsScreen() {
     }
   };
 
+  const handleOpenPrivacyPolicy = async () => {
+    try {
+      await Linking.openURL(PRIVACY_POLICY_URL);
+    } catch {
+      Alert.alert('Unable to open link', 'Please try again in a moment.');
+    }
+  };
+
   return (
     <View style={[styles.container, { paddingTop: topPad }]}>
       <View style={styles.header}>
@@ -415,7 +425,9 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.footerText}>Developed by Abdul Raheem</Text>
+        <TouchableOpacity onPress={handleOpenPrivacyPolicy} activeOpacity={0.8}>
+          <Text style={styles.footerText}>Privacy Policy</Text>
+        </TouchableOpacity>
       </ScrollView>
     </View>
   );

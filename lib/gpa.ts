@@ -183,8 +183,7 @@ export function calculateSemesterGpa(
 ): GpaResult {
   let qualityPoints = 0;
   let totalCredits = 0;
-  let percentagePoints = 0;
-  let percentageCredits = 0;
+  let percentageSum = 0;
   let validSubjects = 0;
   let invalidSubjects = 0;
 
@@ -199,14 +198,13 @@ export function calculateSemesterGpa(
     totalCredits += r.creditHours;
 
     const pct = gradeOrMarksToPercentageWithCriteria(subject.gradeOrMarks, criteria);
-    if (pct != null && r.creditHours > 0) {
-      percentagePoints += pct * r.creditHours;
-      percentageCredits += r.creditHours;
+    if (pct != null) {
+      percentageSum += pct;
     }
   }
 
   const gpa = totalCredits > 0 ? roundTo(qualityPoints / totalCredits, 2) : null;
-  const percentage = percentageCredits > 0 ? roundTo(percentagePoints / percentageCredits, 2) : null;
+  const percentage = validSubjects > 0 ? roundTo(percentageSum / validSubjects, 2) : null;
 
   return {
     gpa,
